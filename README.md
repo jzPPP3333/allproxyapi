@@ -201,7 +201,9 @@ providers:
 
 从你自己已在运行的 Antigravity 客户端里取这两个值。留空时该通道仅在 access token 有效期内可用，过期后刷新会明确报错而不会静默失败。
 
-**WorkBuddy** —— 支持 `snake_case`、`camelCase`、嵌套 `token`/`data` 三种历史落盘格式。
+**WorkBuddy** —— 支持四种落盘格式：顶层 `snake_case`、`camelCase`、嵌套 `token`/`data`，以及**桌面客户端状态文件**（tokens 嵌在 `auth` 下、身份嵌在 `account` 下、区服取自 `auth.domain`）。
+
+标准格式：
 
 ```json
 {
@@ -212,6 +214,18 @@ providers:
   "refresh_token": "...."
 }
 ```
+
+桌面状态文件无需你转换，直接放进扫描目录即可被识别：
+
+```
+%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth/*.info
+```
+
+该目录已在默认 `storage.oauth_dirs` 中，`auth.domain` 为 `workbuddy.cn` 判为 `cn` 区、`workbuddy.ai` 判为 `intl` 区，账号名取自 `account.nickname`（缺失则回退到手机号）。
+
+**加密凭据无法直接读取**：客户端较新版本会把 token 存成 `{"$wbEncrypted":1,"envelope":"..."}`（AES-GCM，密钥在该客户端 Electron 的 `Local State` 中、由 Windows DPAPI 以你的用户账户保护）。网关不会伪装能解开它 —— 这类文件会被**明确报为加密并跳过**（启动日志里能看到），而不是静默消失。做法有二：从客户端导出明文凭据，或用上面的标准格式重新写一份。
+
+> 存储布局会随客户端版本变化。若某个新格式没能被识别，把文件结构贴出来即可加支持 —— 解析层是数据驱动的，无需改动其他部分。
 
 **Qoder** —— 按 token 前缀判别：`pt-`（个人访问令牌）、`jt-`（job token）、`dt-`（设备流令牌）、`drt-`（设备刷新令牌）。
 
@@ -232,7 +246,47 @@ Qoder 凭据的处理规则：
 | `dt-` 设备令牌 | 直接使用；用 `drt-` 刷新令牌续期 |
 | `jt-` job token | 短生命周期，无刷新路径 —— 过期后需重新导入 |
 
-**Qoder 未经实机验证的假设**：默认 host 对（intl `api2-v2.qoder.sh` / cn `gateway.qoder.com.cn`）与 OpenAI 兼容路由 `/model/v1/chat/completions` 来自公开的社区逆向记录，未经本仓库对真实账号的端到端验证。若上游迁移，改 `providers.qoder.base_url` / `auth_url` 即可，无需改代码。
+### 如何导入 Qoder
+
+Qoder **不像 WorkBuddy 那样把可读 token 落在磁盘上**。以下是在真实安装上核实过的存储布局（`~/.qoder-cn` 为 CN 版，国际版是 `~/.qoder`）：
+
+```
+~/.qoder-cn/
+  .auth/machine_id                 纯文本设备 ID
+  .qoder-app-status.json           登录状态、用户名、uid（无 token）
+  .models/default                  {"key":"auto","uid":...}
+  .models/<uid>/catalog-v6         加密的模型目录
+  .cache/endpoint-cache.json       端点（已核实 = gateway.qoder.com.cn）
+```
+
+**token 不在这里**。凭据由客户端持有，磁盘上只有经过客户端自身密钥加密的密文，因此网关**无法**从这些文件直接读出 token —— 这一点和 WorkBuddy 的 `$wbEncrypted` 是同一类问题。
+
+因此导入 Qoder 有三条可用路径，按推荐顺序：
+
+**1. 导入个人访问令牌（推荐，最稳）**
+
+在 Qoder 客户端里生成一个 `pt-` 开头的个人访问令牌，然后写一份凭据文件放进扫描目录：
+
+```json
+{
+  "type": "qoder",
+  "access_token": "pt-....",
+  "account_name": "you@example.com",
+  "realm": "cn"
+}
+```
+
+`pt-` 是长期凭据，网关会在首次使用时自动换取短生命周期的 `jt-`，并在过期后重新换取，无需你干预。放进 `data/oauth/`，或面板「导入凭据」。
+
+**2. 复用客户端已登录的会话**
+
+CN 版的数据目录是 `~/.qoder-cn`（**不是** `~/.qoder`）。网关已把 `.qoder`、`.qoder-cn`、以及两个的 `.auth` 子目录都列进 `storage.oauth_dirs`，同时也读取客户端认的 `QODER_CONFIG_DIR` / `QODERCN_CONFIG_DIR` 环境变量。若客户端把可读凭据写到了这些位置，重启网关即可自动发现。目前实测的 CN 版安装里没有这类文件。
+
+**3. 装 Qoder CLI 后导出**
+
+Qoder 附带 `qoderclicn` CLI（`~/.qoder-cn/entry/` 下有分发脚本，`~/.qoder-cn/bin/` 是 CLI 安装位置；本机未安装）。若你的环境装了它，可以用它的凭据子命令导出 token，再按路径 1 的格式写入。
+
+**realm 怎么选**：CN 版客户端 = `cn`（对应 `gateway.qoder.com.cn`），国际版 = `intl`（对应 `api2-v2.qoder.sh`）。端点已经过本机客户端缓存核实；若上游迁移，改 `providers.qoder.base_url` / `auth_url` 即可，无需改代码。
 
 ### Qoder COSY 信封
 

@@ -118,9 +118,21 @@ routing:
 storage:
   # Directories scanned at startup for credential JSON. Each file is classified
   # as antigravity, workbuddy or qoder by its type field, token prefix, or path.
+  # Scanning is one level deep, so a nested location is listed explicitly.
   oauth_dirs:
     - "./data/oauth"
     - "~/.cli-proxy-api"
+
+    # WorkBuddy / CodeBuddy desktop credentials. Handles both the plain token
+    # export and the nested desktop state file under "auth".
     - "%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth"
+
+    # Qoder ships as two products: the CN build keeps its state in ~/.qoder-cn
+    # and the international one in ~/.qoder. The client also honours
+    # QODER_CONFIG_DIR / QODERCN_CONFIG_DIR; the gateway reads those too.
     - "%APPDATA%/Qoder"
+    - "%APPDATA%/Qoder CN"
     - "~/.qoder"
+    - "~/.qoder-cn"
+    - "~/.qoder/.auth"
+    - "~/.qoder-cn/.auth"

@@ -121,6 +121,56 @@ type StorageConfig struct {
 	OAuthDirs []string `yaml:"oauth_dirs"`
 }
 
+// qoderSearchDirs lists the credential locations scanned at startup.
+//
+// Qoder ships as two products and the CN build keeps its state under
+// ~/.qoder-cn rather than ~/.qoder, so both names are listed for both
+// products. The client also honours QODER_CONFIG_DIR and QODERCN_CONFIG_DIR,
+// which are read here so a relocated install is still found.
+func qoderSearchDirs() []string {
+	home := os.Getenv("USERPROFILE")
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+
+	dirs := []string{
+		"./data/oauth",
+		filepath.Join(home, ".cli-proxy-api"),
+
+		// WorkBuddy / CodeBuddy desktop credentials.
+		filepath.Join(os.Getenv("LOCALAPPDATA"), "CodeBuddyExtension", "Data", "Public", "auth"),
+
+		// Qoder installs, plus the CLI config roots the client honours.
+		filepath.Join(os.Getenv("APPDATA"), "Qoder"),
+		filepath.Join(os.Getenv("APPDATA"), "Qoder CN"),
+		filepath.Join(home, ".qoder"),
+		filepath.Join(home, ".qoder-cn"),
+		os.Getenv("QODER_CONFIG_DIR"),
+		os.Getenv("QODERCN_CONFIG_DIR"),
+	}
+
+	// The client keeps auth material in an .auth subdirectory, and the scan is
+	// one level deep, so those are listed explicitly.
+	for _, root := range append([]string{home}, os.Getenv("QODER_CONFIG_DIR"), os.Getenv("QODERCN_CONFIG_DIR")) {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		dirs = append(dirs,
+			filepath.Join(root, ".qoder", ".auth"),
+			filepath.Join(root, ".qoder-cn", ".auth"),
+		)
+	}
+
+	// Drop empties so a missing environment variable does not add a bare path.
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if strings.TrimSpace(d) != "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -163,13 +213,7 @@ func DefaultConfig() *Config {
 			},
 		},
 		Storage: StorageConfig{
-			OAuthDirs: []string{
-				"./data/oauth",
-				filepath.Join(os.Getenv("USERPROFILE"), ".cli-proxy-api"),
-				filepath.Join(os.Getenv("LOCALAPPDATA"), "CodeBuddyExtension", "Data", "Public", "auth"),
-				filepath.Join(os.Getenv("APPDATA"), "Qoder"),
-				filepath.Join(os.Getenv("USERPROFILE"), ".qoder"),
-			},
+			OAuthDirs: qoderSearchDirs(),
 		},
 	}
 }
