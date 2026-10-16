@@ -64,6 +64,7 @@ const noop = () => 0;
 const stubFetch = (url) => {
   let body = null;
   if (url.startsWith('/api/metrics')) body = { summary: {}, requests: [] };
+  else if (url.startsWith('/api/checkin')) body = { last_run: {}, providers: [] };
   else if (url === '/api/accounts') body = [];
   else if (url === '/api/models') body = [];
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
@@ -72,6 +73,7 @@ const stubFetch = (url) => {
 const runner = new Function('document', 'fetch', 'setInterval', 'setTimeout', 'alert', appSource + `
   return { providerMeta, accountSubtitle, renderProviderFilter, renderModels, filterModels,
            accountStatusBadge, accountRecoveryNote, onImportTypeChange, doImport, openImportModal,
+           checkinBadge, renderCheckin,
            setModels: (m) => { ALL_MODELS = m; }, getModels: () => ALL_MODELS };
 `);
 const api = runner(documentStub, stubFetch, noop, noop, noop);
@@ -211,6 +213,57 @@ check('a missing timestamp shows no countdown',
 check('a past timestamp shows no countdown',
   api.accountRecoveryNote({ status: 'cooling', recover_at: localStamp(-60000) }) === '');
 
+console.log('check-in rendering');
+
+// The four outcomes must be distinguishable: only "failed" is actionable, and
+// "already" means nothing went wrong.
+for (const [status, klass, label] of [
+  ['ok', 'badge-green', '签到成功'],
+  ['already', 'badge-blue', '今日已签'],
+  ['unsupported', 'badge-gray', '不支持'],
+  ['failed', 'badge-red', '失败'],
+]) {
+  const html = api.checkinBadge(status);
+  check(`check-in status ${status} renders ${label}`, html.includes(klass) && html.includes(label), html);
+}
+check('an unknown check-in status is treated as a failure',
+  api.checkinBadge('something-new').includes('badge-red'));
+
+// A streak is progress worth showing.
+api.renderCheckin({
+  attempted: 1, succeeded: 1, already_done: 0, unsupported: 0, failed: 0,
+  results: [{
+    provider: 'qoder', account_id: 'a1', account_name: 'acct-a',
+    status: 'ok', streak_days: 7, rewards: ['10 credits'],
+  }],
+});
+const cbox = documentStub.getElementById('checkin-container').innerHTML;
+check('the streak is shown', cbox.includes('连签 7 天'), cbox);
+check('the rewards are shown', cbox.includes('10 credits'), cbox);
+check('the account name is shown', cbox.includes('acct-a'), cbox);
+check('a success is not styled as a failure', !cbox.includes('badge-red'), cbox);
+check('the summary counts are shown',
+  documentStub.getElementById('checkin-summary').innerText.includes('成功 1'),
+  documentStub.getElementById('checkin-summary').innerText);
+
+// No reported streak must not render "0 天", which would look like a real value.
+api.renderCheckin({
+  attempted: 1, succeeded: 1,
+  results: [{ provider: 'workbuddy', account_name: 'acct-b', status: 'ok' }],
+});
+check('a missing streak shows nothing',
+  !documentStub.getElementById('checkin-container').innerHTML.includes('连签'),
+  documentStub.getElementById('checkin-container').innerHTML);
+
+// An empty run must say so rather than render an empty grid.
+api.renderCheckin({ attempted: 0, results: [] });
+check('an empty run says there is nothing to sign',
+  documentStub.getElementById('checkin-container').innerHTML.includes('没有可签到的账号'),
+  documentStub.getElementById('checkin-container').innerHTML);
+check('an empty run reports "尚未运行"',
+  documentStub.getElementById('checkin-summary').innerText === '尚未运行',
+  documentStub.getElementById('checkin-summary').innerText);
+
 console.log('import modal');
 
 // Qoder must be offered: its absence is what prompted this, and the backend
@@ -267,6 +320,7 @@ const capturingFetch = (url, opts) => {
   // throw and muddy the output.
   let body = null;
   if (url.startsWith('/api/metrics')) body = { summary: {}, requests: [] };
+  else if (url.startsWith('/api/checkin')) body = { last_run: {}, providers: [] };
   else if (url === '/api/accounts' || url === '/api/models') body = [];
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
 };

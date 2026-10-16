@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jzPPP3333/allproxyapi/internal/config"
 	"github.com/jzPPP3333/allproxyapi/internal/ingress/openai"
 	"github.com/jzPPP3333/allproxyapi/internal/pool"
 )
@@ -111,19 +112,94 @@ func (r *Registry) IDs() []string {
 
 // Resolve maps a public model name to a provider and the upstream model name.
 //
-// Resolution order: an explicit "<provider>/<model>" prefix, then the
-// configured regex rules in order, then the configured default provider.
+// The lookup chain, highest priority first:
+//
+//  1. an explicit "<provider>/<model>" prefix on the request
+//  2. an entry in routing.model_mapping, the operator's alias table
+//  3. the configured regex rules, in order
+//  4. the configured default provider
+//
+// A mapping value of "<provider>/<model>" pins both; a bare name overrides only
+// the upstream model and lets the rules choose the provider.
 func (s *Server) ResolveProvider(model string) (provider string, upstreamModel string) {
 	lower := strings.ToLower(model)
 
+	// 1. An explicit prefix always wins: the caller is being specific.
 	if idx := strings.Index(lower, "/"); idx > 0 {
 		if _, ok := s.upstreams.GetByName(lower[:idx]); ok {
 			return lower[:idx], model[idx+1:]
 		}
 	}
 
-	for _, rule := range s.cfg.Routing.ModelRules {
-		matched, _ := regexp.MatchString(rule.Pattern, lower)
+	// 2. The operator's alias table.
+	if mapped, ok := s.lookupAlias(lower); ok {
+		target := mapped.model
+		switch {
+		case mapped.provider != "":
+			return mapped.provider, target
+		default:
+			// Only the model was overridden; the rules pick the provider, using
+			// the alias target so a rule matching the upstream name still works.
+			if p, resolved := s.resolveByRules(target); p != "" {
+				return p, resolved
+			}
+			fallback := s.defaultProvider()
+			return fallback, target
+		}
+	}
+
+	// 3. Rules, then 4. the default provider.
+	if p, resolved := s.resolveByRules(model); p != "" {
+		return p, resolved
+	}
+	return s.defaultProvider(), model
+}
+
+// aliasTarget is a resolved routing.model_mapping entry.
+type aliasTarget struct {
+	provider string
+	model    string
+}
+
+// lookupAlias consults the alias table, matching the requested name
+// case-insensitively. Keys are normalized at lookup time so an operator does
+// not have to remember which case a model name uses.
+func (s *Server) lookupAlias(lower string) (aliasTarget, bool) {
+	mapping := s.routing()
+	if len(mapping.ModelMapping) == 0 {
+		return aliasTarget{}, false
+	}
+
+	raw, ok := mapping.ModelMapping[lower]
+	if !ok {
+		return aliasTarget{}, false
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return aliasTarget{}, false
+	}
+
+	// "<provider>/<model>" pins the provider too.
+	if idx := strings.Index(value, "/"); idx > 0 {
+		if _, known := s.upstreams.GetByName(strings.ToLower(value[:idx])); known {
+			return aliasTarget{
+				provider: strings.ToLower(value[:idx]),
+				model:    value[idx+1:],
+			}, true
+		}
+	}
+	return aliasTarget{model: value}, true
+}
+
+// resolveByRules applies the configured regex rules in order. It returns an
+// empty provider when nothing matched.
+func (s *Server) resolveByRules(model string) (string, string) {
+	lower := strings.ToLower(model)
+	for _, rule := range s.routing().ModelRules {
+		matched, err := regexp.MatchString(rule.Pattern, lower)
+		if err != nil {
+			continue
+		}
 		if matched {
 			target := model
 			if rule.UpstreamModel != "" {
@@ -132,14 +208,27 @@ func (s *Server) ResolveProvider(model string) (provider string, upstreamModel s
 			return strings.ToLower(rule.Provider), target
 		}
 	}
+	return "", ""
+}
 
-	fallback := strings.ToLower(s.cfg.Routing.DefaultProvider)
+// defaultProvider returns the configured default, falling back to the first
+// registered provider so an unset or stale value still routes somewhere.
+func (s *Server) defaultProvider() string {
+	fallback := strings.ToLower(s.routing().DefaultProvider)
 	if _, ok := s.upstreams.GetByName(fallback); !ok {
 		if ids := s.upstreams.IDs(); len(ids) > 0 {
 			fallback = ids[0]
 		}
 	}
-	return fallback, model
+	return fallback
+}
+
+// routing reads the routing config under the reload lock, since the config can
+// be swapped while requests are in flight.
+func (s *Server) routing() config.RoutingConfig {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.Routing
 }
 
 // callUpstream selects an account for the provider and calls it, failing over

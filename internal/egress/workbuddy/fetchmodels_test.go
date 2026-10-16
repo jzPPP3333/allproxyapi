@@ -64,7 +64,7 @@ func TestFetchModelsDropsTierPresets(t *testing.T) {
 		_, _ = w.Write([]byte(upstreamModelsBody))
 	})
 
-	c := NewClient(config.DefaultExcludedModelPatterns)
+	c := NewClient(config.DefaultExcludedModelPatterns, "")
 	acc := &pool.Account{ID: "wb-1", Realm: "cn", UID: "u1", AccessToken: "tok"}
 
 	models, err := c.FetchModels(context.Background(), acc)
@@ -103,7 +103,7 @@ func TestFetchModelsKeepsMetadata(t *testing.T) {
 		_, _ = w.Write([]byte(upstreamModelsBody))
 	})
 
-	c := NewClient(config.DefaultExcludedModelPatterns)
+	c := NewClient(config.DefaultExcludedModelPatterns, "")
 	acc := &pool.Account{ID: "wb-1", Realm: "cn", UID: "u1", AccessToken: "tok"}
 
 	models, err := c.FetchModels(context.Background(), acc)
@@ -136,7 +136,7 @@ func TestFetchModelsCachesFilteredList(t *testing.T) {
 		_, _ = w.Write([]byte(upstreamModelsBody))
 	})
 
-	c := NewClient(config.DefaultExcludedModelPatterns)
+	c := NewClient(config.DefaultExcludedModelPatterns, "")
 	acc := &pool.Account{ID: "wb-1", Realm: "cn", UID: "u1", AccessToken: "tok"}
 
 	if _, err := c.FetchModels(context.Background(), acc); err != nil {
@@ -158,7 +158,7 @@ func TestFetchModelsWithoutFilterKeepsEverything(t *testing.T) {
 		_, _ = w.Write([]byte(upstreamModelsBody))
 	})
 
-	c := NewClient(nil)
+	c := NewClient(nil, "")
 	acc := &pool.Account{ID: "wb-1", Realm: "cn", UID: "u1", AccessToken: "tok"}
 
 	models, err := c.FetchModels(context.Background(), acc)

@@ -201,6 +201,9 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 	httpReq.Header.Set("X-Request-ID", reqID)
 	httpReq.Header.Set("X-Session-ID", sessionID)
 	httpReq.Header.Set("X-Client-Version", c.clientVersion())
+	if ua := c.userAgent(); ua != "" {
+		httpReq.Header.Set("User-Agent", ua)
+	}
 	if enveloped {
 		httpReq.Header.Set("X-Cosy-Alg", CipherAlg)
 		httpReq.Header.Set("X-Cosy-Version", strconv.Itoa(EnvelopeVersion))
@@ -288,6 +291,12 @@ func (c *Client) decorate(reqBody []byte) ([]byte, error) {
 	reqMap["metadata"] = meta
 
 	return json.Marshal(reqMap)
+}
+
+// userAgent is the configured override, or empty to leave the Go default in
+// place. Unlike the other providers, Qoder did not require a specific string.
+func (c *Client) userAgent() string {
+	return strings.TrimSpace(c.cfg.UserAgent)
 }
 
 func (c *Client) clientVersion() string {

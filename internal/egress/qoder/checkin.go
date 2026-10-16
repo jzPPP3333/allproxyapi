@@ -127,6 +127,7 @@ func classifyCheckin(result pool.CheckinResult, status int, raw []byte) pool.Che
 	if parsed.Data.Credits > 0 {
 		result.Rewards = append(result.Rewards, fmt.Sprintf("%d credits", parsed.Data.Credits))
 	}
+	result.StreakDays = parsed.Data.SignDays
 
 	lower := strings.ToLower(message)
 	alreadyDone := parsed.Data.Already ||

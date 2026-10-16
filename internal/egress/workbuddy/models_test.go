@@ -37,7 +37,7 @@ func TestAliasesResolve(t *testing.T) {
 
 // TestGetDefaultModelsMatchesCatalog guards the two accessors from drifting.
 func TestGetDefaultModelsMatchesCatalog(t *testing.T) {
-	c := NewClient(nil)
+	c := NewClient(nil, "")
 	ids := c.GetDefaultModels()
 	catalog := Catalog()
 

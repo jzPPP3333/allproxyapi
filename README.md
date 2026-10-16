@@ -125,11 +125,32 @@ curl http://127.0.0.1:8320/v1/messages \
 
 ## 模型路由
 
-三种方式，优先级从高到低：
+四级查找链，优先级从高到低：
 
-1. **显式前缀**：`qoder/ultimate`、`antigravity/gemini-3.6-flash` —— 前缀必须是已注册的 provider id。
-2. **配置规则**：`routing.model_rules` 按顺序对小写模型名做正则匹配，首个命中生效。
-3. **默认 provider**：`routing.default_provider`。
+1. **显式前缀**：`qoder/ultimate`、`antigravity/gemini-3.6-flash` —— 前缀必须是已注册的 provider id。请求里写死的前缀优先级最高，别名表不会覆盖它。
+2. **别名表**：`routing.model_mapping`，见下。
+3. **配置规则**：`routing.model_rules` 按顺序对小写模型名做正则匹配，首个命中生效。
+4. **默认 provider**：`routing.default_provider`。
+
+### 别名表（model_mapping）
+
+给只会说标准模型名的客户端用 —— 比如固化了 `claude-3-5-sonnet` 的 ChatBox，而 Antigravity 上游只认 `claude-sonnet-4-6`：
+
+```yaml
+routing:
+  model_mapping:
+    # 写成 "<provider>/<模型>" 则两者都固定
+    "claude-3-5-sonnet": "antigravity/claude-sonnet-4-6"
+    "qwen-max":          "qoder/ultimate"
+    # 只写模型名，则只换模型，provider 交给下面的规则判断
+    "deepseek-r1":       "deepseek-v4-pro"
+```
+
+- **键**忽略大小写，`Claude-3-5-Sonnet` 与 `claude-3-5-sonnet` 等价。
+- **值是 `<provider>/<模型>`**：两者都用。若 `/` 前半不是已注册的 provider，整个值会被当作模型名，不会静默丢弃改写。
+- **值是纯模型名**：只覆盖上游模型，provider 仍由 `model_rules` 决定（用改写后的名字去匹配）。
+- 空值会被忽略，等于没配置。
+- 修改后 `POST /api/reload` 即刻生效。
 
 未识别的 provider 前缀不会被当作路由指令，会照常走规则匹配。
 

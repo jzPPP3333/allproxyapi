@@ -54,11 +54,19 @@ func main() {
 		cfg.Server.Host = *hostFlag
 	}
 
+	// Apply the pool tuning before anything can depend on it.
+	if cfg.Pool.SoftCooldownBaseMinutes > 0 || cfg.Pool.SoftCooldownMaxMinutes > 0 {
+		pool.SetCooldownPolicy(
+			time.Duration(cfg.Pool.SoftCooldownBaseMinutes)*time.Minute,
+			time.Duration(cfg.Pool.SoftCooldownMaxMinutes)*time.Minute,
+		)
+	}
+
 	// 2. Initialize Account Pool
 	accountPool := pool.NewAccountPool()
 
 	// 3. Initialize Egress Clients and register them as upstream adapters
-	wbClient := workbuddy.NewClient(cfg.Providers.WorkBuddy.ExcludeModelPatterns)
+	wbClient := workbuddy.NewClient(cfg.Providers.WorkBuddy.ExcludeModelPatterns, cfg.Providers.WorkBuddy.UserAgent)
 	agClient := antigravity.NewClient(&cfg.Providers.Antigravity)
 	qoderClient := qoder.NewClient(cfg.Providers.Qoder)
 

@@ -73,7 +73,7 @@ func TestTierPresetsAreExcluded(t *testing.T) {
 		"auto", "default", "lite",
 		"deepseek-v4.1-flash", "kimi-k3-1", "glm-5.3",
 	)
-	c := NewClient(config.DefaultExcludedModelPatterns)
+	c := NewClient(config.DefaultExcludedModelPatterns, "")
 
 	got := fetchAgainst(t, c, payload)
 	for _, tier := range []string{"auto", "default", "lite"} {
@@ -99,7 +99,7 @@ func TestTierPresetsAreExcluded(t *testing.T) {
 // TestExclusionIsCaseInsensitive checks the defaults match regardless of the
 // upstream's casing, which is not guaranteed stable.
 func TestExclusionIsCaseInsensitive(t *testing.T) {
-	c := NewClient(config.DefaultExcludedModelPatterns)
+	c := NewClient(config.DefaultExcludedModelPatterns, "")
 	for _, id := range []string{"auto", "AUTO", "Default", "LITE"} {
 		if !c.excluded(id) {
 			t.Errorf("%q should be excluded", id)
@@ -110,7 +110,7 @@ func TestExclusionIsCaseInsensitive(t *testing.T) {
 // TestExclusionDoesNotOverreach checks the patterns are anchored: a real model
 // that merely contains the word must survive.
 func TestExclusionDoesNotOverreach(t *testing.T) {
-	c := NewClient(config.DefaultExcludedModelPatterns)
+	c := NewClient(config.DefaultExcludedModelPatterns, "")
 	for _, id := range []string{
 		"auto-v2",          // not an exact preset name
 		"myglm-fast-x",     // unrelated
@@ -127,7 +127,7 @@ func TestExclusionDoesNotOverreach(t *testing.T) {
 // TestNoPatternsMeansNoFiltering documents that an empty config keeps every
 // entry, so a user can opt back into seeing the tiers.
 func TestNoPatternsMeansNoFiltering(t *testing.T) {
-	c := NewClient(nil)
+	c := NewClient(nil, "")
 	for _, id := range []string{"auto", "default", "glm-5.3"} {
 		if c.excluded(id) {
 			t.Errorf("%q was excluded with no patterns configured", id)
@@ -137,7 +137,7 @@ func TestNoPatternsMeansNoFiltering(t *testing.T) {
 
 // TestInvalidPatternIsSkipped checks a bad regexp does not disable the client.
 func TestInvalidPatternIsSkipped(t *testing.T) {
-	c := NewClient([]string{"[unclosed", `(?i)^default$`})
+	c := NewClient([]string{"[unclosed", `(?i)^default$`}, "")
 	if len(c.excludeModel) != 1 {
 		t.Fatalf("expected only the valid pattern to compile, got %d", len(c.excludeModel))
 	}
@@ -149,7 +149,7 @@ func TestInvalidPatternIsSkipped(t *testing.T) {
 // TestCustomPatternsReplaceDefaults checks a caller-supplied list is what takes
 // effect, so pattern changes are config-only and need no rebuild.
 func TestCustomPatternsReplaceDefaults(t *testing.T) {
-	c := NewClient([]string{`(?i)^legacy-`})
+	c := NewClient([]string{`(?i)^legacy-`}, "")
 	if !c.excluded("legacy-model") {
 		t.Error("custom pattern was not applied")
 	}
@@ -165,7 +165,7 @@ func TestExcludedModelsAreNotCached(t *testing.T) {
 	acc := &pool.Account{ID: "wb-1"}
 
 	// Simulate the parse loop's filtering against a cached account.
-	c := NewClient(config.DefaultExcludedModelPatterns)
+	c := NewClient(config.DefaultExcludedModelPatterns, "")
 	payload := modelsPayload("default", "deepseek-v4.1-flash")
 
 	var parsed upstreamModelsResponse

@@ -413,6 +413,20 @@ claude</pre>
       </div>
     </div>
 
+    <!-- Check-in -->
+    <div class="card" style="margin-top: 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="font-size: 1rem; font-weight: 700;">每日签到</h2>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <span class="badge badge-gray" id="checkin-summary">尚未运行</span>
+          <button class="btn btn-sm" id="btn-checkin" onclick="runCheckin()">立即签到</button>
+        </div>
+      </div>
+      <div class="models-grid" id="checkin-container" style="margin-top: 0.75rem;">
+        <div style="color: var(--text-muted); font-size: 0.75rem;">点击「立即签到」为所有通道执行签到，或等待每日定时任务。</div>
+      </div>
+    </div>
+
     <!-- Playground -->
     <div class="card" style="margin-top: 1rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
@@ -595,6 +609,86 @@ claude</pre>
           (r.error ? '<div style="font-size:0.68rem; color:var(--danger); margin-top:0.2rem;">' + escapeHtml(r.error) + '</div>' : '') +
         '</div>';
       }).join('');
+    }
+
+    // --- check-in --------------------------------------------------------
+
+    // The four outcomes read very differently to an operator: "already" means
+    // nothing was wrong, "unsupported" means the channel has no check-in, and
+    // only "failed" is actionable.
+    function checkinBadge(status) {
+      switch (status) {
+        case 'ok':          return '<span class="badge badge-green" style="font-size:0.6rem;">签到成功</span>';
+        case 'already':     return '<span class="badge badge-blue" style="font-size:0.6rem;">今日已签</span>';
+        case 'unsupported': return '<span class="badge badge-gray" style="font-size:0.6rem;">不支持</span>';
+        default:            return '<span class="badge badge-red" style="font-size:0.6rem;">失败</span>';
+      }
+    }
+
+    function renderCheckin(summary) {
+      const box = document.getElementById('checkin-container');
+      const results = summary.results || [];
+
+      const ok = (summary.succeeded || 0) + (summary.already_done || 0);
+      const label = summary.attempted
+        ? `尝试 ${summary.attempted} · 成功 ${ok} · 不支持 ${summary.unsupported || 0} · 失败 ${summary.failed || 0}`
+        : '尚未运行';
+      document.getElementById('checkin-summary').innerText = label;
+
+      if (!results.length) {
+        box.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem;">没有可签到的账号。</div>';
+        return;
+      }
+
+      box.innerHTML = results.map(r => {
+        // A streak is progress the operator wants to see; it is only shown when
+        // the upstream reported one, since zero is ambiguous.
+        const streak = r.streak_days
+          ? '<span class="badge badge-indigo" style="font-size:0.6rem;">连签 ' + r.streak_days + ' 天</span>'
+          : '';
+        const rewards = (r.rewards || []).length
+          ? '<div style="font-size:0.68rem; color:#f59e0b; margin-top:0.2rem;">' +
+              r.rewards.map(escapeHtml).join(' · ') + '</div>'
+          : '';
+        const note = r.message
+          ? '<div style="font-size:0.68rem; color:var(--text-muted); margin-top:0.2rem;">' +
+              escapeHtml(r.message) + '</div>'
+          : '';
+        return '<div class="model-card" style="padding: 0.5rem;">' +
+          '<div style="display:flex; justify-content:space-between; gap:0.5rem; align-items:center;">' +
+            '<span style="font-size:0.72rem;">' + escapeHtml(r.account_name || r.account_id || '-') + '</span>' +
+            '<span style="display:flex; gap:0.25rem;">' + checkinBadge(r.status) + streak + '</span>' +
+          '</div>' +
+          '<div style="font-size:0.65rem; color:var(--text-muted);">' + escapeHtml(r.provider || '-') + '</div>' +
+          rewards + note +
+        '</div>';
+      }).join('');
+    }
+
+    async function loadCheckin() {
+      let data;
+      try {
+        data = await fetch('/api/checkin').then(r => r.json());
+      } catch (_) {
+        return;
+      }
+      if (data.last_run) renderCheckin(data.last_run);
+    }
+
+    async function runCheckin() {
+      const btn = document.getElementById('btn-checkin');
+      const original = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = '签到中…';
+      try {
+        const summary = await fetch('/api/checkin', { method: 'POST' }).then(r => r.json());
+        renderCheckin(summary);
+      } catch (e) {
+        document.getElementById('checkin-summary').innerText = '签到请求失败: ' + e;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = original;
+      }
     }
 
     // --- playground ------------------------------------------------------
@@ -1041,10 +1135,13 @@ claude</pre>
 
     refreshData();
     refreshMetrics();
+    loadCheckin();
     setInterval(refreshData, 10000);
     // Metrics poll faster than the account list: request throughput changes on
     // a much shorter timescale than account state does.
     setInterval(refreshMetrics, 3000);
+    // Check-in state changes at most once a day, so it only needs a slow poll.
+    setInterval(loadCheckin, 60000);
   </script>
 </body>
 </html>

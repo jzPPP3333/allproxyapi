@@ -145,7 +145,7 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 	}
 
 	httpReq.Header.Set("Authorization", "Bearer "+acc.AccessToken)
-	httpReq.Header.Set("User-Agent", "antigravity/hub/2.9.1 darwin/arm64")
+	httpReq.Header.Set("User-Agent", c.userAgent())
 	httpReq.Header.Set("X-Goog-Api-Client", "gl-node/22.21.1")
 	httpReq.Header.Set("Content-Type", "application/json")
 	if isStream {

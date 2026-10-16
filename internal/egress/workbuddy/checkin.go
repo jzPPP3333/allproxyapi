@@ -46,7 +46,7 @@ func (c *Client) Checkin(ctx context.Context, acc *pool.Account, checkinPath str
 
 	// The check-in endpoint sits behind the same identity gate as inference, so
 	// the same header set applies.
-	for k, v := range BuildIdentityHeaders(acc) {
+	for k, v := range buildIdentityHeaders(acc, c.userAgent) {
 		req.Header.Set(k, v)
 	}
 
@@ -67,7 +67,7 @@ func (c *Client) Checkin(ctx context.Context, acc *pool.Account, checkinPath str
 		if retryErr != nil {
 			return result, fmt.Errorf("workbuddy checkin: rebuild request: %w", retryErr)
 		}
-		for k, v := range BuildIdentityHeaders(acc) {
+		for k, v := range buildIdentityHeaders(acc, c.userAgent) {
 			retry.Header.Set(k, v)
 		}
 		resp2, doErr := c.httpClient.Do(retry)
@@ -121,6 +121,9 @@ func classifyCheckin(result pool.CheckinResult, status int, raw []byte) pool.Che
 	if parsed.Data.Integral > 0 {
 		result.Rewards = append(result.Rewards, fmt.Sprintf("%d 积分", parsed.Data.Integral))
 	}
+	// The upstream reports the consecutive count; it is surfaced so the panel
+	// can show progress rather than just a pass/fail.
+	result.StreakDays = parsed.Data.SignedDay
 
 	alreadyDone := parsed.Data.Already ||
 		strings.Contains(strings.ToLower(message), "already") ||

@@ -26,7 +26,11 @@ type CheckinResult struct {
 	Status      CheckinStatus `json:"status"`
 	Message     string        `json:"message,omitempty"`
 	Rewards     []string      `json:"rewards,omitempty"`
-	At          time.Time     `json:"at"`
+	// StreakDays is the consecutive check-in count the upstream reports. Zero
+	// means the provider did not report one, which is different from a streak
+	// of zero days.
+	StreakDays int       `json:"streak_days,omitempty"`
+	At         time.Time `json:"at"`
 }
 
 // OK reports whether the check-in succeeded, whether or not a reward was given.

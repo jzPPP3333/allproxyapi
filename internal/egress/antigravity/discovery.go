@@ -187,8 +187,13 @@ func buildCatalog(entries map[string]availableModelEntry) []pool.ModelMetadata {
 	return out
 }
 
-// userAgent mirrors the client's own identifier, which the upstream gates on.
+// userAgent is the identifier sent upstream, which the upstream gates on. The
+// configured override exists for matching a specific client build; empty keeps
+// the build this gateway emulates.
 func (c *Client) userAgent() string {
+	if ua := strings.TrimSpace(c.cfg.UserAgent); ua != "" {
+		return ua
+	}
 	return "antigravity/hub/2.9.1 darwin/arm64"
 }
 

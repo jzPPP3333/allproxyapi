@@ -14,6 +14,7 @@ type Config struct {
 	Providers ProvidersConfig `yaml:"providers"`
 	Routing   RoutingConfig   `yaml:"routing"`
 	Storage   StorageConfig   `yaml:"storage"`
+	Pool      PoolConfig      `yaml:"pool"`
 }
 
 type ServerConfig struct {
@@ -21,6 +22,24 @@ type ServerConfig struct {
 	Port   int    `yaml:"port"`
 	APIKey string `yaml:"api_key"`
 	Proxy  string `yaml:"proxy"`
+	// LogLevel filters the request log: "debug", "info", "warn" or "error".
+	// Empty means info. Debug also logs every upstream request line.
+	LogLevel string `yaml:"log_level"`
+}
+
+// PoolConfig tunes the account pool's cooldown behaviour.
+type PoolConfig struct {
+	// SoftCooldownBaseMinutes is the first soft cooldown after a rate limit.
+	// Each consecutive failure doubles it, up to SoftCooldownMaxMinutes.
+	// Zero uses the built-in defaults.
+	SoftCooldownBaseMinutes int `yaml:"soft_cooldown_base_minutes"`
+	// SoftCooldownMaxMinutes caps the exponential backoff.
+	SoftCooldownMaxMinutes int `yaml:"soft_cooldown_max_minutes"`
+	// KeepaliveHours is how often to refresh each account's credit snapshot
+	// with a lightweight read. Zero disables the keepalive.
+	KeepaliveHours int `yaml:"keepalive_hours"`
+	// CreditRefreshHours is how often to re-read remaining allowance.
+	CreditRefreshHours int `yaml:"credit_refresh_hours"`
 }
 
 type ProvidersConfig struct {
@@ -39,6 +58,9 @@ type QoderConfig struct {
 	AuthURL string `yaml:"auth_url"`
 	// ClientVersion is the client build reported in the request metadata.
 	ClientVersion string `yaml:"client_version"`
+	// UserAgent overrides the identifier sent upstream. Empty uses the default
+	// Go client string, matching the observed request shape.
+	UserAgent string `yaml:"user_agent"`
 	// Proxy is an optional per-provider egress proxy.
 	Proxy string `yaml:"proxy"`
 	// COSY configures the encrypted request envelope. Leaving the public key
@@ -72,14 +94,20 @@ type COSYConfig struct {
 type AntigravityConfig struct {
 	BaseURL        string `yaml:"base_url"`
 	DefaultProject string `yaml:"default_project"`
-	ClientID       string `yaml:"client_id"`
-	ClientSecret   string `yaml:"client_secret"`
-	Proxy          string `yaml:"proxy"`
+	// UserAgent overrides the identifier sent upstream. Empty uses the client
+	// build this gateway emulates, which is what the upstream expects.
+	UserAgent    string `yaml:"user_agent"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	Proxy        string `yaml:"proxy"`
 }
 
 type WorkBuddyConfig struct {
 	DefaultRealm   string `yaml:"default_realm"`   // "cn" or "intl"
 	DefaultProduct string `yaml:"default_product"` // "workbuddy", "vscode", "cli"
+	// UserAgent overrides the identifier sent upstream. Empty uses the per-realm
+	// WorkBuddy build string.
+	UserAgent string `yaml:"user_agent"`
 	// CheckinPath is the daily check-in route appended to the realm's chat
 	// host. Empty disables check-in for this provider.
 	CheckinPath string `yaml:"checkin_path"`
@@ -117,6 +145,15 @@ var DefaultExcludedModelPatterns = []string{
 type RoutingConfig struct {
 	DefaultProvider string            `yaml:"default_provider"` // one of the registered provider ids
 	ModelRules      []ModelRuleConfig `yaml:"model_rules"`
+	// ModelMapping is an explicit alias table, consulted before the regex
+	// rules. Keys are matched case-insensitively against the requested name.
+	// A value is either "<provider>/<model>" to pin both, or a bare model name
+	// to override only the upstream model while the rules pick the provider.
+	//
+	// This exists for the cases the rules cannot express: a client that only
+	// speaks standard names ("claude-3-5-sonnet", "qwen-max") pointed at an
+	// upstream that renamed its models.
+	ModelMapping map[string]string `yaml:"model_mapping"`
 }
 
 type ModelRuleConfig struct {
@@ -182,9 +219,19 @@ func qoderSearchDirs() []string {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host:   "127.0.0.1",
-			Port:   8320,
-			APIKey: "sk-allproxyapi",
+			Host:     "127.0.0.1",
+			Port:     8320,
+			APIKey:   "sk-allproxyapi",
+			LogLevel: "info",
+		},
+		Pool: PoolConfig{
+			// These mirror pool.SoftCooldownBase / SoftCooldownMax. They are
+			// stated here rather than imported because the pool package depends
+			// on config, so referencing it would be a cycle.
+			SoftCooldownBaseMinutes: 10,
+			SoftCooldownMaxMinutes:  120,
+			KeepaliveHours:          6,
+			CreditRefreshHours:      3,
 		},
 		Providers: ProvidersConfig{
 			Antigravity: AntigravityConfig{
@@ -256,6 +303,16 @@ func LoadConfig(path string) (*Config, error) {
 			home, _ := os.UserHomeDir()
 			cfg.Storage.OAuthDirs[i] = filepath.Join(home, dir[2:])
 		}
+	}
+
+	// Alias keys are matched case-insensitively, so they are folded once here
+	// rather than on every request.
+	if len(cfg.Routing.ModelMapping) > 0 {
+		folded := make(map[string]string, len(cfg.Routing.ModelMapping))
+		for alias, target := range cfg.Routing.ModelMapping {
+			folded[strings.ToLower(strings.TrimSpace(alias))] = target
+		}
+		cfg.Routing.ModelMapping = folded
 	}
 
 	return cfg, nil

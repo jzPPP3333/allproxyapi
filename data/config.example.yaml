@@ -11,6 +11,22 @@ server:
   # Optional egress proxy for providers that do not set their own. Leave empty
   # to fall back to HTTPS_PROXY / HTTP_PROXY or the Windows system proxy.
   proxy: ""
+  # Request log level: debug, info, warn or error. Debug additionally logs every
+  # upstream request line.
+  log_level: "info"
+
+# Account pool tuning. All of these take effect on POST /api/reload.
+pool:
+  # Backoff applied to an account after a rate limit (429 or a concurrency cap).
+  # The first cooldown is the base; each consecutive failure doubles it, capped
+  # at the max.
+  soft_cooldown_base_minutes: 10
+  soft_cooldown_max_minutes: 120
+  # How often to refresh each account's remaining-allowance snapshot with a
+  # lightweight read. This doubles as keepalive, preventing an idle session from
+  # being dropped upstream. 0 disables it.
+  keepalive_hours: 6
+  credit_refresh_hours: 3
 
 providers:
   # Google Antigravity (Cloud Code PA). Requests are translated to the Gemini
@@ -84,6 +100,14 @@ providers:
 routing:
   # Provider used when no model rule matches. Must be a registered provider id.
   default_provider: "workbuddy"
+  # Explicit alias table, consulted before model_rules. For a client that only
+  # speaks standard names while the upstream renamed its models.
+  #   "<provider>/<model>" pins both; a bare model name overrides only the
+  #   model and lets model_rules pick the provider. Keys are case-insensitive.
+  model_mapping: {}
+    # "claude-3-5-sonnet": "antigravity/claude-sonnet-4-6"
+    # "qwen-max":          "qoder/ultimate"
+    # "deepseek-r1":       "deepseek-v4-pro"
   # Rules are evaluated in order against the lowercased model name. The first
   # match wins. An explicit "<provider>/<model>" prefix on the request always
   # takes precedence over these rules.
@@ -118,8 +142,6 @@ routing:
       provider: "qoder"
       upstream_model: ""
     - pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel).*"
-      provider: "qoder"
-      upstream_model: ""
       provider: "qoder"
       upstream_model: ""
 

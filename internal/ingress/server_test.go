@@ -19,7 +19,7 @@ import (
 func newTestRegistry(cfg *config.Config) *Registry {
 	reg := NewRegistry()
 	reg.Register(NewWorkBuddyAdapter(
-		workbuddy.NewClient(cfg.Providers.WorkBuddy.ExcludeModelPatterns),
+		workbuddy.NewClient(cfg.Providers.WorkBuddy.ExcludeModelPatterns, cfg.Providers.WorkBuddy.UserAgent),
 		cfg.Providers.WorkBuddy.CheckinPath,
 	))
 	reg.Register(NewAntigravityAdapter(antigravity.NewClient(&cfg.Providers.Antigravity)))

@@ -18,11 +18,13 @@ import (
 type Client struct {
 	httpClient   *http.Client
 	excludeModel []*regexp.Regexp
+	// userAgent overrides the per-realm User-Agent when set.
+	userAgent string
 }
 
 // NewClient builds a client. excludePatterns are regexps matched against an
 // upstream model id; a match drops that entry from the discovered list.
-func NewClient(excludePatterns []string) *Client {
+func NewClient(excludePatterns []string, userAgent string) *Client {
 	var compiled []*regexp.Regexp
 	for _, p := range excludePatterns {
 		if strings.TrimSpace(p) == "" {
@@ -37,6 +39,7 @@ func NewClient(excludePatterns []string) *Client {
 	}
 	return &Client{
 		excludeModel: compiled,
+		userAgent:    userAgent,
 		httpClient: &http.Client{
 			Timeout: 180 * time.Second,
 			Transport: &http.Transport{
@@ -128,7 +131,7 @@ func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) 
 		return nil, err
 	}
 
-	headers := BuildIdentityHeaders(acc)
+	headers := buildIdentityHeaders(acc, c.userAgent)
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}
@@ -235,7 +238,7 @@ func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.Mod
 		return nil, err
 	}
 
-	headers := BuildIdentityHeaders(acc)
+	headers := buildIdentityHeaders(acc, c.userAgent)
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
 	}

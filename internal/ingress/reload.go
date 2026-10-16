@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jzPPP3333/allproxyapi/internal/config"
+	"github.com/jzPPP3333/allproxyapi/internal/pool"
 )
 
 // Configuration that is safe to change while the gateway runs. Changing the
@@ -20,8 +22,15 @@ import (
 var reloadableFields = []string{
 	"server.api_key",
 	"server.proxy",
+	"server.log_level",
+	"providers.antigravity.user_agent",
+	"providers.workbuddy.user_agent",
+	"providers.qoder.user_agent",
 	"routing.default_provider",
 	"routing.model_rules",
+	"routing.model_mapping",
+	"pool.soft_cooldown_base_minutes",
+	"pool.soft_cooldown_max_minutes",
 	"providers.workbuddy.checkin_path",
 	"providers.workbuddy.daily_checkin",
 	"providers.workbuddy.exclude_model_patterns",
@@ -90,6 +99,12 @@ func (s *Server) handleAPIReload(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	s.cfg = fresh
 	s.cfgMu.Unlock()
+
+	// Values that live outside the config struct need applying explicitly.
+	pool.SetCooldownPolicy(
+		time.Duration(fresh.Pool.SoftCooldownBaseMinutes)*time.Minute,
+		time.Duration(fresh.Pool.SoftCooldownMaxMinutes)*time.Minute,
+	)
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":           "ok",

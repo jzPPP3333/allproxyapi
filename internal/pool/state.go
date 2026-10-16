@@ -2,6 +2,7 @@ package pool
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -50,10 +51,50 @@ func nextDailyReset(now time.Time) time.Time {
 // soft cooldown backoff bounds. A rate-limited account starts at the base and
 // doubles per consecutive failure, capped, so a persistently-limited account
 // backs off instead of hammering.
+//
+// These are the defaults; the operator can override them in config, so the
+// live values are read through the setters below rather than used directly.
 const (
 	SoftCooldownBase = 10 * time.Minute
 	SoftCooldownMax  = 2 * time.Hour
 )
+
+// cooldownPolicy holds the live backoff bounds. It is swappable at runtime
+// because the config can be reloaded while requests are in flight.
+var cooldownPolicy struct {
+	sync.RWMutex
+	base time.Duration
+	max  time.Duration
+}
+
+func init() {
+	cooldownPolicy.base = SoftCooldownBase
+	cooldownPolicy.max = SoftCooldownMax
+}
+
+// SetCooldownPolicy overrides the backoff bounds. A zero value keeps the
+// current setting, so a config that omits one field does not reset it.
+func SetCooldownPolicy(base, max time.Duration) {
+	cooldownPolicy.Lock()
+	defer cooldownPolicy.Unlock()
+	if base > 0 {
+		cooldownPolicy.base = base
+	}
+	if max > 0 {
+		if max < cooldownPolicy.base {
+			// A cap below the base would make the first cooldown exceed it.
+			max = cooldownPolicy.base
+		}
+		cooldownPolicy.max = max
+	}
+}
+
+// CooldownPolicy returns the live bounds, for display and tests.
+func CooldownPolicy() (base, max time.Duration) {
+	cooldownPolicy.RLock()
+	defer cooldownPolicy.RUnlock()
+	return cooldownPolicy.base, cooldownPolicy.max
+}
 
 // modelCooldownRetention bounds the per-model cooldown map so a long-lived
 // process cannot accumulate an entry per model ever seen.
@@ -165,16 +206,18 @@ func (a *Account) SetSoftCooldown(requested time.Duration, reason string) {
 	a.LastError = reason
 	a.disabled = false
 
+	base, ceiling := CooldownPolicy()
+
 	dur := requested
-	backoff := SoftCooldownBase * time.Duration(1<<min(a.FailStreak-1, 8))
-	if backoff > SoftCooldownMax {
-		backoff = SoftCooldownMax
+	backoff := base * time.Duration(1<<min(a.FailStreak-1, 8))
+	if backoff > ceiling {
+		backoff = ceiling
 	}
 	if dur < backoff {
 		dur = backoff
 	}
-	if dur > SoftCooldownMax {
-		dur = SoftCooldownMax
+	if dur > ceiling {
+		dur = ceiling
 	}
 
 	until := time.Now().Add(dur)
@@ -190,7 +233,8 @@ func (a *Account) SetModelCooldown(model string, dur time.Duration, reason strin
 		return
 	}
 	if dur <= 0 {
-		dur = SoftCooldownBase
+		base, _ := CooldownPolicy()
+		dur = base
 	}
 
 	a.mu.Lock()

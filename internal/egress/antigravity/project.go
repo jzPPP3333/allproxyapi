@@ -94,7 +94,7 @@ func (c *Client) LoadCodeAssist(ctx context.Context, acc *pool.Account) (string,
 
 	req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/hub/2.9.1 darwin/arm64")
+	req.Header.Set("User-Agent", c.userAgent())
 	req.Header.Set("X-Goog-Api-Client", "gl-node/22.21.1")
 
 	resp, err := c.httpClient.Do(req)
