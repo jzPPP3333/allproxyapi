@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jzPPP3333/allproxyapi/internal/config"
@@ -21,6 +23,10 @@ import (
 type Client struct {
 	cfg        *config.AntigravityConfig
 	httpClient *http.Client
+
+	// discMu guards the per-account discovery cache.
+	discMu    sync.RWMutex
+	discCache map[string]discoveryEntry
 }
 
 func NewClient(cfg *config.AntigravityConfig) *Client {
@@ -82,13 +88,9 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 		endpoint = baseURL + "/v1internal:streamGenerateContent?alt=sse"
 	}
 
-	projectID := acc.ProjectID
-	if projectID == "" {
-		projectID = c.cfg.DefaultProject
-	}
-	if projectID == "" {
-		projectID = DefaultProjectID
-	}
+	// The envelope needs a project id; discover it from the credential when the
+	// account did not arrive with one.
+	projectID := c.ResolveProject(ctx, acc)
 
 	// Generate negative random sessionId as STRING if absent
 	if _, ok := geminiReq["sessionId"]; !ok {
@@ -143,7 +145,7 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 	}
 
 	httpReq.Header.Set("Authorization", "Bearer "+acc.AccessToken)
-	httpReq.Header.Set("User-Agent", "antigravity/hub/2.9.1 darwin/arm64")
+	httpReq.Header.Set("User-Agent", c.userAgent())
 	httpReq.Header.Set("X-Goog-Api-Client", "gl-node/22.21.1")
 	httpReq.Header.Set("Content-Type", "application/json")
 	if isStream {
@@ -157,19 +159,46 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		resp.Body.Close()
-		acc.SetCooldown(60*time.Second, "429 Too Many Requests")
+		acc.SetSoftCooldown(0, "429 Too Many Requests")
 		return nil, fmt.Errorf("antigravity rate limit (429)")
+	}
+
+	// 402 plus the Google quota signals mean the allowance is spent, not that
+	// the request was malformed. Park the account until the daily reset rather
+	// than for an arbitrary window, since the allowance refills on the
+	// provider's schedule.
+	if isQuotaExhausted(resp.StatusCode) {
+		errBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		acc.SetHardCooldown(quotaReason(resp.StatusCode, errBytes))
+		return nil, fmt.Errorf("antigravity %s", quotaReason(resp.StatusCode, errBytes))
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
 		// Try token refresh
 		if refreshErr := RefreshToken(ctx, acc, c.cfg.ClientID, c.cfg.ClientSecret, c.cfg.Proxy); refreshErr == nil {
+			// A fresh credential may belong to a different project, so a stale
+			// cached project id must not be reused.
+			ForgetProject(acc.ID)
 			// Retry once with new token
 			return c.DoGenerate(ctx, acc, model, geminiReq, isStream)
 		}
-		acc.SetCooldown(300*time.Second, "401 Unauthorized")
+		// The credential is present but unusable and cannot be refreshed, so
+		// the account cannot recover without a human re-authenticating it.
+		acc.Disable("401 Unauthorized，且刷新失败")
 		return nil, fmt.Errorf("antigravity unauthorized (401)")
+	}
+
+	// A 403 naming quota is the same exhaustion signal under a different code.
+	if resp.StatusCode == http.StatusForbidden {
+		errBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if reason, ok := quotaTextReason(errBytes); ok {
+			acc.SetHardCooldown(reason)
+			return nil, fmt.Errorf("antigravity %s", reason)
+		}
+		return nil, fmt.Errorf("antigravity upstream error (403): %s", string(errBytes))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -182,32 +211,32 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 }
 
 func (c *Client) GetDefaultModels() []string {
-	return []string{
-		"gemini-2.5-flash",
-		"gemini-2.5-pro",
-		"gemini-2.5-flash-thinking",
-		"gemini-3-flash",
-		"claude-3-7-sonnet",
-		"claude-3-5-sonnet",
-	}
+	return CatalogIDs()
 }
 
-// FetchModels returns available models for the Antigravity account.
+// FetchModels returns the account's available models, discovering them from
+// the upstream and falling back to the static catalog when discovery is
+// unavailable.
+//
+// Discovery is preferred because the upstream's model set changes without
+// notice; the static catalog is a floor so the provider still advertises
+// something usable when the endpoint errors, the credential is stale, or the
+// deployment blocks it.
 func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error) {
 	if existing := acc.GetModels(); len(existing) > 0 {
 		return existing, nil
 	}
 
-	defaultList := []pool.ModelMetadata{
-		{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", DescriptionZh: "Google 最新极速轻量模型，低延迟高吞吐", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
-		{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", DescriptionZh: "Google 旗舰深度推理模型，复杂编码首选", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
-		{ID: "gemini-2.5-flash-thinking", Name: "Gemini 2.5 Flash Thinking", DescriptionZh: "具备显式思维链的 Gemini 增强模型", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "gemini-3-flash", Name: "Gemini 3 Flash", DescriptionZh: "新一代 Gemini 3 早期体验版本", SupportsToolCall: true, SupportsImages: true},
-		{ID: "claude-3-7-sonnet", Name: "Claude 3.7 Sonnet", DescriptionZh: "Anthropic 旗舰混合推理模型 (映射至 claude-sonnet-4-6)", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
-		{ID: "claude-3-5-sonnet", Name: "Claude 3.5 Sonnet", DescriptionZh: "Anthropic 前沿编码智能体模型", SupportsToolCall: true, SupportsImages: true},
-		{ID: "claude-opus-4-6-thinking", Name: "Claude Opus 4.6 Thinking", DescriptionZh: "Anthropic 顶级能力思考增强模型", SupportsToolCall: true, SupportsReasoning: true},
+	discovered, err := c.FetchAvailableModels(ctx, acc)
+	if err == nil && len(discovered) > 0 {
+		acc.SetModels(discovered)
+		return discovered, nil
+	}
+	if err != nil {
+		log.Printf("[Antigravity] 账号 %s 动态模型发现失败，回退到静态目录: %v", acc.Name, err)
 	}
 
-	acc.SetModels(defaultList)
-	return defaultList, nil
+	list := CatalogCopy()
+	acc.SetModels(list)
+	return list, nil
 }

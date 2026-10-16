@@ -62,6 +62,7 @@
     .badge-indigo { background: rgba(99, 102, 241, 0.15); color: #818cf8; border-color: rgba(99, 102, 241, 0.3); }
     .badge-amber { background: rgba(245, 158, 11, 0.15); color: var(--warning); border-color: rgba(245, 158, 11, 0.3); }
     .badge-gray { background: rgba(156, 163, 175, 0.15); color: var(--text-muted); border-color: rgba(156, 163, 175, 0.3); }
+    .badge-red { background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: rgba(239, 68, 68, 0.3); }
 
     .btn {
       background: #1f2937;
@@ -294,6 +295,11 @@
         <div class="stat-desc" id="stat-ag-desc">已同步 0 个云端模型</div>
       </div>
       <div class="card">
+        <div class="stat-title">Alibaba Qoder</div>
+        <div class="stat-value" id="stat-qoder" style="color: var(--success);">0</div>
+        <div class="stat-desc" id="stat-qoder-desc">已同步 0 个模型</div>
+      </div>
+      <div class="card">
         <div class="stat-title">可用模型总数</div>
         <div class="stat-value" id="stat-models" style="color: var(--success);">0</div>
         <div class="stat-desc">支持智能降级与实时搜索</div>
@@ -342,9 +348,8 @@
         <div style="display: flex; gap: 0.5rem; align-items: center;">
           <input type="text" id="model-search" placeholder="🔍 搜索模型名称或特性..." oninput="filterModels()" style="max-width: 220px; font-size: 0.75rem; padding: 0.35rem 0.6rem;">
           <select id="model-filter" onchange="filterModels()" style="max-width: 140px; font-size: 0.75rem; padding: 0.35rem;">
+            <!-- Rebuilt from the loaded models by renderProviderFilter(). -->
             <option value="all">全部通道</option>
-            <option value="workbuddy">Tencent WorkBuddy</option>
-            <option value="antigravity">Google Antigravity</option>
           </select>
         </div>
       </div>
@@ -392,6 +397,56 @@ claude</pre>
         <p style="font-size: 0.75rem; color: var(--text-muted);">使用 `/v1/messages` 原生协议，完整支持 Tool Calls，自动清洗 `const` 解决 400 校验错误。</p>
       </div>
     </div>
+
+    <!-- Metrics -->
+    <div class="card" style="margin-top: 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="font-size: 1rem; font-weight: 700;">实时指标与请求日志</h2>
+        <div style="display: flex; gap: 0.4rem;">
+          <span class="badge badge-gray" id="metric-qps" title="自启动以来的平均每秒请求数">QPS 0.00</span>
+          <span class="badge badge-blue" id="metric-ttft" title="首 token 延迟中位数 / P95">TTFT - / -</span>
+          <span class="badge badge-green" id="metric-ok" title="成功 / 失败">成功 0 / 失败 0</span>
+        </div>
+      </div>
+      <div class="models-grid" id="metrics-container" style="margin-top: 0.75rem; max-height: 260px; overflow-y: auto;">
+        <div style="color: var(--text-muted); font-size: 0.75rem;">暂无请求记录</div>
+      </div>
+    </div>
+
+    <!-- Check-in -->
+    <div class="card" style="margin-top: 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="font-size: 1rem; font-weight: 700;">每日签到</h2>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <span class="badge badge-gray" id="checkin-summary">尚未运行</span>
+          <button class="btn btn-sm" id="btn-checkin" onclick="runCheckin()">立即签到</button>
+        </div>
+      </div>
+      <div class="models-grid" id="checkin-container" style="margin-top: 0.75rem;">
+        <div style="color: var(--text-muted); font-size: 0.75rem;">点击「立即签到」为所有通道执行签到，或等待每日定时任务。</div>
+      </div>
+    </div>
+
+    <!-- Playground -->
+    <div class="card" style="margin-top: 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="font-size: 1rem; font-weight: 700;">在线演练场</h2>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <select id="playground-model" style="font-size: 0.75rem; padding: 0.35rem; max-width: 240px;"></select>
+          <label style="font-size: 0.7rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.25rem;">
+            <input type="checkbox" id="playground-reasoning" checked> 显示思考链
+          </label>
+          <button class="btn btn-sm" onclick="clearPlayground()">清空</button>
+        </div>
+      </div>
+      <div id="playground-log" style="margin-top: 0.75rem; max-height: 320px; overflow-y: auto; font-size: 0.8rem; line-height: 1.5;"></div>
+      <div style="display: flex; gap: 0.4rem; margin-top: 0.6rem;">
+        <input type="text" id="playground-input" placeholder="输入消息，回车发送…"
+               style="flex: 1; font-size: 0.8rem; padding: 0.5rem;"
+               onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendPlayground();}">
+        <button class="btn btn-sm" id="playground-send" onclick="sendPlayground()">发送</button>
+      </div>
+    </div>
   </main>
 
   <!-- Import Modal -->
@@ -402,20 +457,32 @@ claude</pre>
         <button onclick="closeImportModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.25rem;">&times;</button>
       </div>
       <p style="font-size: 0.75rem; color: var(--text-muted);">
-        支持粘贴 WorkBuddy / Antigravity 的 JSON 凭证，导入后网关将自动向该 API 发起连接并同步可用的完整模型列表。
+        支持粘贴 WorkBuddy / Antigravity / Qoder 的 JSON 凭证，导入后网关将自动向该 API 发起连接并同步可用的完整模型列表。
       </p>
 
       <div>
         <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">凭证类型</label>
-        <select id="import-type">
+        <select id="import-type" onchange="onImportTypeChange()">
           <option value="workbuddy">Tencent WorkBuddy (国内版/国际版)</option>
           <option value="antigravity">Google Antigravity (Cloud Code PA)</option>
+          <option value="qoder">Alibaba Qoder</option>
+        </select>
+      </div>
+
+      <!-- Qoder ships as two deployments with different hosts; picking the
+           wrong one fails with a 401 that gives no hint the host was wrong. -->
+      <div id="import-realm-row" style="display: none;">
+        <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Qoder 区服</label>
+        <select id="import-realm">
+          <option value="cn">国内版 (gateway.qoder.com.cn)</option>
+          <option value="intl">国际版 (api2-v2.qoder.sh)</option>
         </select>
       </div>
 
       <div>
         <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">凭据 JSON 内容</label>
         <textarea id="import-json" rows="8" placeholder='{"type": "workbuddy", "accessToken": "eyJ...", "refreshToken": "..."}'></textarea>
+        <div id="import-hint" style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.35rem;"></div>
       </div>
 
       <div id="import-result" style="display: none; padding: 0.75rem; border-radius: 0.375rem; font-size: 0.75rem;"></div>
@@ -434,6 +501,317 @@ claude</pre>
   <script>
     let ALL_MODELS = [];
 
+    // Per-provider display metadata. A provider the table does not know about
+    // still renders with its own id as the label, so adding an upstream never
+    // silently mislabels its models.
+    const PROVIDER_META = {
+      workbuddy:   { label: 'Tencent WorkBuddy',   short: 'WorkBuddy',   badge: 'badge-indigo' },
+      antigravity: { label: 'Google Antigravity',  short: 'Antigravity', badge: 'badge-blue' },
+      qoder:       { label: 'Alibaba Qoder',       short: 'Qoder',       badge: 'badge-green' }
+    };
+
+    function providerMeta(id) {
+      return PROVIDER_META[id] || { label: id || 'unknown', short: id || 'unknown', badge: 'badge-indigo' };
+    }
+
+    // The account row subtitle differs per provider: Antigravity shows its
+    // project, the others show the region they are pointed at.
+    function accountSubtitle(acc) {
+      if (acc.type === 'antigravity') return acc.project_id || 'aicode-consumers';
+      const region = acc.realm === 'cn' ? '国内版' : (acc.realm ? '国际版' : '');
+      return region || '—';
+    }
+
+    // Filters the model grid down to one account's provider. Referenced by the
+    // account row's model-count badge; it had no definition before, so the
+    // click did nothing.
+    //
+    // The filter is by provider, not by account: the aggregated list is
+    // deduplicated per provider, so an individual model cannot be attributed
+    // back to one of several accounts serving it.
+    function filterAccountModels(accountType) {
+      const sel = document.getElementById('model-filter');
+      sel.value = accountType;
+      if (sel.value !== accountType) return; // provider has no models listed
+      document.getElementById('model-search').value = '';
+      filterModels();
+
+      const container = document.getElementById('models-container');
+      if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // The four lifecycle states map to distinct badges. A soft cooldown and a
+    // hard one read very differently to an operator: one clears in minutes, the
+    // other waits for the daily reset and cannot be hurried.
+    function accountStatusBadge(acc) {
+      switch (acc.status) {
+        case 'cooling':
+          return '<span class="badge badge-amber" title="限流冷却，会自行恢复">● 软冷却</span>';
+        case 'frozen':
+          return '<span class="badge badge-red" title="额度耗尽，等待每日重置">● 硬冷却</span>';
+        case 'dead':
+          return '<span class="badge badge-red" title="凭据失效，需要重新登录">● 已失效</span>';
+        case 'expired':
+          return '<span class="badge badge-gray" title="访问令牌已过期，将按需刷新">● 令牌过期</span>';
+        default:
+          return '<span class="badge badge-green">● 就绪</span>';
+      }
+    }
+
+    // Renders the remaining time on an account that is parked, so the operator
+    // does not have to work it out from an absolute timestamp.
+    function accountRecoveryNote(acc) {
+      if (!acc.recover_at || (acc.status !== 'cooling' && acc.status !== 'frozen')) return '';
+      const until = new Date(acc.recover_at.replace(' ', 'T'));
+      const mins = Math.round((until - new Date()) / 60000);
+      if (!isFinite(mins) || mins <= 0) return '';
+      const label = mins >= 60 ? Math.round(mins / 60) + ' 小时后' : mins + ' 分钟后';
+      return '<div style="font-size:0.65rem; color:var(--text-muted);">' + label + '恢复</div>';
+    }
+
+    // --- metrics ---------------------------------------------------------
+
+    async function refreshMetrics() {
+      let data;
+      try {
+        data = await fetch('/api/metrics?limit=40').then(r => r.json());
+      } catch (_) {
+        return;
+      }
+      const s = data.summary || {};
+
+      document.getElementById('metric-qps').innerText =
+        'QPS ' + (s.qps || 0).toFixed(2);
+      document.getElementById('metric-ttft').innerText =
+        'TTFT ' + (s.ttft_ms_p50 || 0) + ' / ' + (s.ttft_ms_p95 || 0) + ' ms';
+      document.getElementById('metric-ok').innerText =
+        '成功 ' + (s.succeeded || 0) + ' / 失败 ' + (s.failed || 0);
+
+      const rows = data.requests || [];
+      const box = document.getElementById('metrics-container');
+      if (!rows.length) {
+        box.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem;">暂无请求记录</div>';
+        return;
+      }
+      box.innerHTML = rows.map(r => {
+        const ok = r.status >= 200 && r.status < 400 && !r.error;
+        const cls = ok ? 'badge-green' : 'badge-red';
+        const ttft = r.ttft_ms ? ' · TTFT ' + r.ttft_ms + 'ms' : '';
+        return '<div class="model-card" style="padding: 0.5rem;">' +
+          '<div style="display:flex; justify-content:space-between; gap:0.5rem; align-items:center;">' +
+            '<span style="font-family:monospace; font-size:0.72rem;">' + escapeHtml(r.model || r.path) + '</span>' +
+            '<span class="badge ' + cls + '" style="font-size:0.6rem;">' + r.status + '</span>' +
+          '</div>' +
+          '<div style="font-size:0.68rem; color:var(--text-muted); margin-top:0.2rem;">' +
+            escapeHtml(r.provider || '-') + (r.account ? ' · ' + escapeHtml(r.account) : '') +
+            ' · ' + r.duration_ms + 'ms' + ttft +
+          '</div>' +
+          (r.error ? '<div style="font-size:0.68rem; color:var(--danger); margin-top:0.2rem;">' + escapeHtml(r.error) + '</div>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    // --- check-in --------------------------------------------------------
+
+    // The four outcomes read very differently to an operator: "already" means
+    // nothing was wrong, "unsupported" means the channel has no check-in, and
+    // only "failed" is actionable.
+    function checkinBadge(status) {
+      switch (status) {
+        case 'ok':          return '<span class="badge badge-green" style="font-size:0.6rem;">签到成功</span>';
+        case 'already':     return '<span class="badge badge-blue" style="font-size:0.6rem;">今日已签</span>';
+        case 'unsupported': return '<span class="badge badge-gray" style="font-size:0.6rem;">不支持</span>';
+        default:            return '<span class="badge badge-red" style="font-size:0.6rem;">失败</span>';
+      }
+    }
+
+    function renderCheckin(summary) {
+      const box = document.getElementById('checkin-container');
+      const results = summary.results || [];
+
+      const ok = (summary.succeeded || 0) + (summary.already_done || 0);
+      const label = summary.attempted
+        ? `尝试 ${summary.attempted} · 成功 ${ok} · 不支持 ${summary.unsupported || 0} · 失败 ${summary.failed || 0}`
+        : '尚未运行';
+      document.getElementById('checkin-summary').innerText = label;
+
+      if (!results.length) {
+        box.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem;">没有可签到的账号。</div>';
+        return;
+      }
+
+      box.innerHTML = results.map(r => {
+        // A streak is progress the operator wants to see; it is only shown when
+        // the upstream reported one, since zero is ambiguous.
+        const streak = r.streak_days
+          ? '<span class="badge badge-indigo" style="font-size:0.6rem;">连签 ' + r.streak_days + ' 天</span>'
+          : '';
+        const rewards = (r.rewards || []).length
+          ? '<div style="font-size:0.68rem; color:#f59e0b; margin-top:0.2rem;">' +
+              r.rewards.map(escapeHtml).join(' · ') + '</div>'
+          : '';
+        const note = r.message
+          ? '<div style="font-size:0.68rem; color:var(--text-muted); margin-top:0.2rem;">' +
+              escapeHtml(r.message) + '</div>'
+          : '';
+        return '<div class="model-card" style="padding: 0.5rem;">' +
+          '<div style="display:flex; justify-content:space-between; gap:0.5rem; align-items:center;">' +
+            '<span style="font-size:0.72rem;">' + escapeHtml(r.account_name || r.account_id || '-') + '</span>' +
+            '<span style="display:flex; gap:0.25rem;">' + checkinBadge(r.status) + streak + '</span>' +
+          '</div>' +
+          '<div style="font-size:0.65rem; color:var(--text-muted);">' + escapeHtml(r.provider || '-') + '</div>' +
+          rewards + note +
+        '</div>';
+      }).join('');
+    }
+
+    async function loadCheckin() {
+      let data;
+      try {
+        data = await fetch('/api/checkin').then(r => r.json());
+      } catch (_) {
+        return;
+      }
+      if (data.last_run) renderCheckin(data.last_run);
+    }
+
+    async function runCheckin() {
+      const btn = document.getElementById('btn-checkin');
+      const original = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = '签到中…';
+      try {
+        const summary = await fetch('/api/checkin', { method: 'POST' }).then(r => r.json());
+        renderCheckin(summary);
+      } catch (e) {
+        document.getElementById('checkin-summary').innerText = '签到请求失败: ' + e;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = original;
+      }
+    }
+
+    // --- playground ------------------------------------------------------
+
+    let playgroundHistory = [];
+
+    function clearPlayground() {
+      playgroundHistory = [];
+      document.getElementById('playground-log').innerHTML = '';
+    }
+
+    function renderPlaygroundModelOptions() {
+      const sel = document.getElementById('playground-model');
+      const previous = sel.value;
+      const ids = ALL_MODELS.map(m => m.id);
+      sel.innerHTML = ids.map(id => '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>').join('');
+      // Keep the operator's choice if that model is still available.
+      if (previous && ids.includes(previous)) sel.value = previous;
+    }
+
+    function appendPlayground(role, text, isThinking) {
+      const log = document.getElementById('playground-log');
+      const colour = role === 'user' ? 'var(--accent)' : (role === 'assistant' ? 'var(--text)' : 'var(--danger)');
+      const label = role === 'user' ? '你' : (role === 'assistant' ? '模型' : '错误');
+      const div = document.createElement('div');
+      div.style.margin = '0.4rem 0';
+      if (isThinking) {
+        div.innerHTML = '<div style="font-size:0.7rem; color:var(--text-muted);">思考链</div>' +
+          '<div style="white-space:pre-wrap; color:var(--text-muted); font-style:italic; border-left:2px solid var(--border); padding-left:0.5rem; margin-top:0.2rem;"></div>';
+        div.lastChild.innerText = text;
+      } else {
+        div.innerHTML = '<div style="font-size:0.7rem; color:var(--text-muted);">' + label + '</div>' +
+          '<div style="white-space:pre-wrap; color:' + colour + '; margin-top:0.2rem;"></div>';
+        div.lastChild.innerText = text;
+      }
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+      return div;
+    }
+
+    // Streams a completion, appending deltas as they arrive so the operator
+    // sees the same behaviour a real client would.
+    async function sendPlayground() {
+      const input = document.getElementById('playground-input');
+      const text = (input.value || '').trim();
+      if (!text) return;
+
+      const model = document.getElementById('playground-model').value;
+      if (!model) { appendPlayground('error', '没有可用模型，请先添加账号并同步模型。'); return; }
+
+      input.value = '';
+      appendPlayground('user', text);
+      playgroundHistory.push({ role: 'user', content: text });
+
+      const showThinking = document.getElementById('playground-reasoning').checked;
+      const sendBtn = document.getElementById('playground-send');
+      sendBtn.disabled = true;
+
+      const replyBox = appendPlayground('assistant', '');
+      replyBox.lastChild.innerText = '…';
+      const thinkingBox = showThinking ? appendPlayground('thinking', '', true) : null;
+      let thinkingText = '';
+
+      try {
+        const resp = await fetch('/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: model, messages: playgroundHistory, stream: true })
+        });
+
+        if (!resp.ok) {
+          replyBox.lastChild.innerText = '';
+          appendPlayground('error', 'HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 300));
+          sendBtn.disabled = false;
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let answer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE frames are separated by a blank line; keep the trailing partial.
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop();
+
+          for (const frame of frames) {
+            for (const line of frame.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              const payload = line.slice(5).trim();
+              if (!payload || payload === '[DONE]') continue;
+              let chunk;
+              try { chunk = JSON.parse(payload); } catch (_) { continue; }
+
+              const choice = (chunk.choices || [])[0] || {};
+              const delta = choice.delta || {};
+              if (delta.reasoning_content) {
+                thinkingText += delta.reasoning_content;
+                if (thinkingBox) thinkingBox.lastChild.innerText = thinkingText;
+              }
+              if (delta.content) {
+                answer += delta.content;
+                replyBox.lastChild.innerText = answer;
+              }
+            }
+          }
+        }
+
+        if (!answer) replyBox.lastChild.innerText = '(空响应)';
+        playgroundHistory.push({ role: 'assistant', content: answer });
+      } catch (e) {
+        replyBox.lastChild.innerText = '';
+        appendPlayground('error', String(e));
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
     async function refreshData() {
       try {
         const [statusRes, accountsRes, modelsRes] = await Promise.all([
@@ -449,9 +827,12 @@ claude</pre>
           const ag = byType.antigravity || {};
           const wb = byType.workbuddy || {};
 
+          const qoder = byType.qoder || {};
+
           document.getElementById('stat-total').innerText = total;
           document.getElementById('stat-wb').innerText = (wb.healthy || 0) + ' / ' + (wb.total || 0);
           document.getElementById('stat-ag').innerText = (ag.healthy || 0) + ' / ' + (ag.total || 0);
+          document.getElementById('stat-qoder').innerText = (qoder.healthy || 0) + ' / ' + (qoder.total || 0);
         }
 
         // 2. Accounts Table
@@ -461,25 +842,22 @@ claude</pre>
         } else {
           let wbModelsCount = 0;
           let agModelsCount = 0;
+          let qoderModelsCount = 0;
 
           tbody.innerHTML = accountsRes.map(acc => {
-            const isAg = acc.type === 'antigravity';
-            const badgeClass = isAg ? 'badge-blue' : 'badge-indigo';
-            const channelName = isAg ? 'Google Antigravity' : 'Tencent WorkBuddy';
-            const sub = isAg ? (acc.project_id || 'aicode-consumers') : (acc.realm === 'cn' ? '国内版' : '国际版');
+            const meta = providerMeta(acc.type);
+            const badgeClass = meta.badge;
+            const channelName = meta.label;
+            const sub = accountSubtitle(acc);
 
-            if (isAg) agModelsCount += (acc.model_count || 0);
-            else wbModelsCount += (acc.model_count || 0);
+            if (acc.type === 'antigravity') agModelsCount += (acc.model_count || 0);
+            else if (acc.type === 'workbuddy') wbModelsCount += (acc.model_count || 0);
+            else if (acc.type === 'qoder') qoderModelsCount += (acc.model_count || 0);
 
-            let statusBadge = '<span class="badge badge-green">● 就绪</span>';
-            if (acc.status === 'cooldown') {
-              statusBadge = '<span class="badge badge-amber">● 冷却中</span>';
-            } else if (acc.status === 'expired') {
-              statusBadge = '<span class="badge badge-gray">● 已过期</span>';
-            }
+            const statusBadge = accountStatusBadge(acc);
 
             const modelBadge = acc.model_count > 0
-              ? `<span class="badge badge-green" style="cursor:pointer;" onclick="filterAccountModels('${acc.id}')">${acc.model_count} 个模型</span>`
+              ? `<span class="badge badge-green" style="cursor:pointer;" onclick="filterAccountModels('${acc.type}')">${acc.model_count} 个模型</span>`
               : `<span class="badge badge-gray">未获取</span>`;
 
             return `
@@ -489,7 +867,7 @@ claude</pre>
                 <td style="color: var(--text-muted); font-size: 0.8rem;">${escapeHtml(sub)}</td>
                 <td style="font-family: monospace; font-size: 0.75rem; color: #94a3b8;">${escapeHtml(acc.token_mask || '已配置')}</td>
                 <td>${modelBadge}</td>
-                <td>${statusBadge}</td>
+                <td>${statusBadge}${accountRecoveryNote(acc)}</td>
                 <td style="color: var(--text-muted); font-size: 0.75rem;">${escapeHtml(acc.expires_at || '未知')}</td>
                 <td>
                   <div style="display: flex; gap: 0.35rem;">
@@ -503,12 +881,15 @@ claude</pre>
 
           if (wbModelsCount > 0) document.getElementById('stat-wb-desc').innerText = `已同步 ${wbModelsCount} 个原生模型`;
           if (agModelsCount > 0) document.getElementById('stat-ag-desc').innerText = `已同步 ${agModelsCount} 个云端模型`;
+          if (qoderModelsCount > 0) document.getElementById('stat-qoder-desc').innerText = `已同步 ${qoderModelsCount} 个模型`;
         }
 
         // 3. Models
         ALL_MODELS = modelsRes || [];
         document.getElementById('stat-models').innerText = ALL_MODELS.length;
+        renderProviderFilter();
         renderModels(ALL_MODELS);
+        renderPlaygroundModelOptions();
 
       } catch (err) {
         console.error("Dashboard refresh error:", err);
@@ -523,9 +904,9 @@ claude</pre>
       }
 
       mContainer.innerHTML = list.map(m => {
-        const isAg = m.provider === 'antigravity';
-        const badgeClass = isAg ? 'badge-blue' : 'badge-indigo';
-        const providerName = isAg ? 'Antigravity' : 'WorkBuddy';
+        const meta = providerMeta(m.provider);
+        const badgeClass = meta.badge;
+        const providerName = meta.label;
 
         let feats = '';
         if (m.supports_reasoning) feats += '<span class="model-feat">🧠 深度思考</span>';
@@ -554,6 +935,26 @@ claude</pre>
           </div>
         `;
       }).join('');
+    }
+
+    // The dropdown was a hardcoded list of two providers, so Qoder models could
+    // not be filtered to and were hidden whenever a filter was active. It is
+    // now built from the providers actually present in the data.
+    function renderProviderFilter() {
+      const sel = document.getElementById('model-filter');
+      const counts = {};
+      ALL_MODELS.forEach(m => { counts[m.provider] = (counts[m.provider] || 0) + 1; });
+
+      const previous = sel.value || 'all';
+      const options = ['<option value="all">全部通道 (' + ALL_MODELS.length + ')</option>'];
+      Object.keys(counts).sort().forEach(function (id) {
+        const meta = providerMeta(id);
+        options.push('<option value="' + id + '">' + meta.label + ' (' + counts[id] + ')</option>');
+      });
+      sel.innerHTML = options.join('');
+
+      // Keep the user's selection if that provider still has models.
+      sel.value = (previous !== 'all' && counts[previous]) ? previous : 'all';
     }
 
     function filterModels() {
@@ -616,10 +1017,38 @@ claude</pre>
     function openImportModal() {
       document.getElementById('import-result').style.display = 'none';
       document.getElementById('import-modal').classList.add('active');
+      // Seed the hint and the realm row for the currently selected type.
+      onImportTypeChange();
     }
 
     function closeImportModal() {
       document.getElementById('import-modal').classList.remove('active');
+    }
+
+    // Each provider expects a different credential shape, so the hint and the
+    // placeholder follow the selected type rather than describing only one.
+    const IMPORT_HINTS = {
+      workbuddy: {
+        placeholder: '{"type": "workbuddy", "accessToken": "eyJ...", "refreshToken": "..."}',
+        hint: '也可直接粘贴桌面客户端的 *.info 状态文件内容；区服会从 auth.domain 自动判定。'
+      },
+      antigravity: {
+        placeholder: '{"type": "antigravity", "access_token": "ya29...", "refresh_token": "1//...", "project_id": "..."}',
+        hint: '需要 providers.antigravity.client_id / client_secret 才能续期，否则令牌过期后该账号会失效。'
+      },
+      qoder: {
+        placeholder: '{"type": "qoder", "access_token": "pt-...", "account_name": "you@example.com"}',
+        hint: '推荐使用 pt- 个人访问令牌：网关会在首次请求时自动换取 jt-，并在过期后自动重新换取。'
+      }
+    };
+
+    function onImportTypeChange() {
+      const type = document.getElementById('import-type').value;
+      const meta = IMPORT_HINTS[type] || {};
+
+      document.getElementById('import-json').placeholder = meta.placeholder || '';
+      document.getElementById('import-hint').innerText = meta.hint || '';
+      document.getElementById('import-realm-row').style.display = type === 'qoder' ? 'block' : 'none';
     }
 
     async function doImport() {
@@ -644,6 +1073,12 @@ claude</pre>
       if (!parsed.type) {
         parsed.type = typeSelect;
       }
+      // Qoder's realm selects the upstream host. A credential imported without
+      // one silently defaults to the international endpoints, so a CN account
+      // fails with a 401 that says nothing about the host being wrong.
+      if (parsed.type === 'qoder' && !parsed.realm) {
+        parsed.realm = document.getElementById('import-realm').value;
+      }
 
       btn.disabled = true;
       btn.innerText = '正在导入并获取模型...';
@@ -661,7 +1096,8 @@ claude</pre>
           resBox.style.background = 'rgba(16, 185, 129, 0.15)';
           resBox.style.color = '#34d399';
           resBox.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-          resBox.innerHTML = `✅ 导入成功！已加入连接池，并从上游 API 成功获取到 <b>${resp.models_count || 0}</b> 个可用模型！`;
+          const realmNote = resp.realm ? `（区服 <b>${escapeHtml(resp.realm)}</b>）` : '';
+          resBox.innerHTML = `✅ 导入成功！已加入连接池${realmNote}，并从上游 API 成功获取到 <b>${resp.models_count || 0}</b> 个可用模型！`;
           setTimeout(() => {
             closeImportModal();
             refreshData();
@@ -698,7 +1134,14 @@ claude</pre>
     }
 
     refreshData();
+    refreshMetrics();
+    loadCheckin();
     setInterval(refreshData, 10000);
+    // Metrics poll faster than the account list: request throughput changes on
+    // a much shorter timescale than account state does.
+    setInterval(refreshMetrics, 3000);
+    // Check-in state changes at most once a day, so it only needs a slow poll.
+    setInterval(loadCheckin, 60000);
   </script>
 </body>
 </html>

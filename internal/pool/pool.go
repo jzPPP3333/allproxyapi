@@ -11,15 +11,23 @@ import (
 type AccountPool struct {
 	mu       sync.RWMutex
 	accounts map[string]*Account        // ID -> Account
-	byType   map[AccountType][]*Account // Type -> list of Accounts
-	cursor   map[AccountType]int        // Type -> Round-robin cursor
+	byType   map[AccountType][]*Account // Type -> list of accounts
+	cursor   map[AccountType]int        // Type -> round-robin cursor
+	affinity *affinityTracker           // conversation -> account bindings
 }
 
 func NewAccountPool() *AccountPool {
+	return newAccountPoolWithSeed(time.Now().UnixNano())
+}
+
+// newAccountPoolWithSeed builds a pool whose random choices are reproducible,
+// for tests that assert on selection.
+func newAccountPoolWithSeed(seed int64) *AccountPool {
 	return &AccountPool{
 		accounts: make(map[string]*Account),
 		byType:   make(map[AccountType][]*Account),
 		cursor:   make(map[AccountType]int),
+		affinity: newAffinityTracker(seed),
 	}
 }
 
@@ -112,49 +120,11 @@ func (p *AccountPool) ListByType(accType AccountType) []*Account {
 	return res
 }
 
-// Pick selects a healthy account using round-robin.
-// If all accounts are in cooldown, it returns the one whose cooldown expires earliest.
+// Pick selects an account for a provider with no model constraint. Prefer
+// PickFor when the request's model is known, so model capability and per-model
+// cooldowns are respected.
 func (p *AccountPool) Pick(accType AccountType) *Account {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	list := p.byType[accType]
-	if len(list) == 0 {
-		return nil
-	}
-
-	n := len(list)
-
-	// Try finding a healthy account (not in cooldown and not expired)
-	for i := 0; i < n; i++ {
-		idx := p.cursor[accType] % n
-		p.cursor[accType] = (p.cursor[accType] + 1) % n
-		acc := list[idx]
-
-		if !acc.IsCoolingDown() && !acc.IsExpired() {
-			return acc
-		}
-	}
-
-	// Secondary check: allow expired token if it has refresh token (will be refreshed on demand)
-	for i := 0; i < n; i++ {
-		idx := p.cursor[accType] % n
-		p.cursor[accType] = (p.cursor[accType] + 1) % n
-		acc := list[idx]
-
-		if !acc.IsCoolingDown() && acc.RefreshToken != "" {
-			return acc
-		}
-	}
-
-	// Fallback: pick the one whose cooldown expires earliest
-	best := list[0]
-	for _, acc := range list[1:] {
-		if acc.CooldownUntil.Before(best.CooldownUntil) {
-			best = acc
-		}
-	}
-	return best
+	return p.PickFor(DispatchOptions{Provider: accType})
 }
 
 func (p *AccountPool) MarkCooldown(acc *Account, dur time.Duration, reason string) {
@@ -187,11 +157,20 @@ func (p *AccountPool) Stats() map[string]any {
 		t := string(acc.Type)
 		sub, ok := byType[t]
 		if !ok {
-			sub = map[string]int{"total": 0, "healthy": 0, "cooldown": 0, "expired": 0}
+			// Every bucket is pre-created so the panel can read a count without
+			// handling a missing key.
+			sub = map[string]int{
+				"total": 0, "healthy": 0,
+				"cooling": 0, "frozen": 0, "dead": 0, "expired": 0,
+				// Lifecycle states, reported alongside the display names so a
+				// consumer can use either.
+				"active": 0, "soft_cooldown": 0, "hard_cooldown": 0, "disabled": 0,
+			}
 			byType[t] = sub
 		}
 		sub["total"]++
 		sub[acc.Status()]++
+		sub[string(acc.State())]++
 	}
 
 	return stats

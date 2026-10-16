@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jzPPP3333/allproxyapi/internal/pool"
@@ -63,6 +64,13 @@ func GetRealmConfig(realm string) RealmConfig {
 }
 
 func BuildIdentityHeaders(acc *pool.Account) map[string]string {
+	return buildIdentityHeaders(acc, "")
+}
+
+// buildIdentityHeaders is the same, with an operator override for the
+// User-Agent. The real client sends a WorkBuddy-specific string, so an override
+// is only useful to match a different build.
+func buildIdentityHeaders(acc *pool.Account, userAgentOverride string) map[string]string {
 	realm := "cn"
 	if acc.Realm != "" {
 		realm = acc.Realm
@@ -101,6 +109,10 @@ func BuildIdentityHeaders(acc *pool.Account) map[string]string {
 
 	if acc.EnterpriseID != "" {
 		headers["X-Enterprise-Id"] = acc.EnterpriseID
+	}
+
+	if ua := strings.TrimSpace(userAgentOverride); ua != "" {
+		headers["User-Agent"] = ua
 	}
 
 	return headers

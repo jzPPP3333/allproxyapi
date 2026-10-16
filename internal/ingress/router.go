@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jzPPP3333/allproxyapi/internal/config"
@@ -26,6 +27,11 @@ type Server struct {
 	pool      *pool.AccountPool
 	upstreams *Registry
 	mux       *http.ServeMux
+	checkin   *CheckinScheduler
+	metrics   *Metrics
+	// cfgMu guards the reloadable config and the path a reload reads from.
+	cfgMu           sync.RWMutex
+	configPathValue string
 }
 
 func NewServer(cfg *config.Config, p *pool.AccountPool, upstreams *Registry) *Server {
@@ -34,18 +40,28 @@ func NewServer(cfg *config.Config, p *pool.AccountPool, upstreams *Registry) *Se
 		pool:      p,
 		upstreams: upstreams,
 		mux:       http.NewServeMux(),
+		metrics:   NewMetrics(),
 	}
 	s.setupRoutes()
 	return s
 }
 
+// AttachCheckinScheduler links the daily scheduler so the dashboard can report
+// its most recent run. It is optional: without it the check-in API still works,
+// it simply has no scheduled summary to show.
+func (s *Server) AttachCheckinScheduler(sched *CheckinScheduler) { s.checkin = sched }
+
 func (s *Server) Handler() http.Handler {
 	return s.loggingMiddleware(s.corsMiddleware(s.authMiddleware(s.mux)))
 }
 
+// statusResponseWriter records the status and the time of the first byte, which
+// is the first-token latency for a streaming response.
 type statusResponseWriter struct {
 	http.ResponseWriter
 	statusCode int
+	at         time.Time
+	firstWrite time.Time
 }
 
 func (rw *statusResponseWriter) WriteHeader(code int) {
@@ -53,16 +69,74 @@ func (rw *statusResponseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+func (rw *statusResponseWriter) Write(b []byte) (int, error) {
+	if rw.firstWrite.IsZero() && len(b) > 0 {
+		rw.firstWrite = time.Now()
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
+// Flush forwards to the underlying writer so streaming still works through the
+// wrapper; without this the SSE path would buffer instead of streaming.
+func (rw *statusResponseWriter) Flush() {
+	if rw.firstWrite.IsZero() {
+		rw.firstWrite = time.Now()
+	}
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// firstWriteMillis returns the time from start to the first byte, or 0 when
+// nothing was written.
+func (rw *statusResponseWriter) firstWriteMillis(start time.Time) int64 {
+	if rw.firstWrite.IsZero() {
+		return 0
+	}
+	return rw.firstWrite.Sub(start).Milliseconds()
+}
+
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		next.ServeHTTP(rw, r)
+		rw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK, at: start}
+
+		// Handlers record the model and account they used; the middleware reads
+		// it back once the request finishes.
+		ctx, info := withRequestInfo(r.Context())
+		next.ServeHTTP(rw, r.WithContext(ctx))
+
 		duration := time.Since(start)
 
-		if r.URL.Path != "/health" && r.URL.Path != "/api/status" && r.URL.Path != "/api/accounts" {
+		path := RedactPath(r.URL.Path)
+
+		// Polling endpoints would otherwise drown the log; they are counted in
+		// the metrics but not printed.
+		quiet := path == "/health" || path == "/api/status" ||
+			path == "/api/accounts" || path == "/api/metrics"
+		if !quiet {
 			log.Printf("[HTTP] %s %s -> 状态码:%d (耗时:%s, 客户端:%s)",
-				r.Method, r.URL.Path, rw.statusCode, duration, r.RemoteAddr)
+				r.Method, path, rw.statusCode, duration, r.RemoteAddr)
+		}
+
+		// Only the API surface is recorded; dashboard assets are not traffic.
+		if s.metrics != nil && strings.HasPrefix(path, "/v1/") {
+			rec := RequestRecord{
+				At:             start,
+				Method:         r.Method,
+				Path:           path,
+				Status:         rw.statusCode,
+				DurationMillis: duration.Milliseconds(),
+				Model:          info.Model,
+				Provider:       info.Provider,
+				Account:        info.Account,
+				Tokens:         info.Tokens,
+				Err:            RedactError(info.Err),
+			}
+			if ttft := rw.firstWriteMillis(start); ttft > 0 {
+				rec.TTFTMillis = ttft
+			}
+			s.metrics.Observe(rec)
 		}
 	})
 }
@@ -91,6 +165,9 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/accounts/sync-models", s.handleAPISyncModels)
 	s.mux.HandleFunc("/api/accounts/import", s.handleAPIImportAccount)
 	s.mux.HandleFunc("/api/models", s.handleAPIModels)
+	s.mux.HandleFunc("/api/checkin", s.handleAPICheckin)
+	s.mux.HandleFunc("/api/metrics", s.handleAPIMetrics)
+	s.mux.HandleFunc("/api/reload", s.handleAPIReload)
 
 	// Embedded Web Dashboard
 	web.RegisterRoutes(s.mux)
@@ -172,38 +249,50 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Unix()
 	var models []openai.ModelItem
-	seen := make(map[string]bool)
 
-	// 1. Collect dynamic models from all accounts
+	// The same name can be served by more than one provider (several upstreams
+	// offer Kimi, GLM and DeepSeek). Keying on the name alone made whichever
+	// provider synced first the winner and silently removed the others, so the
+	// key is provider-scoped.
+	seen := make(map[string]bool)
+	add := func(id string, owner pool.AccountType) {
+		key := string(owner) + "/" + id
+		if id == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		models = append(models, openai.ModelItem{
+			ID:      id,
+			Object:  "model",
+			Created: now,
+			OwnedBy: string(owner),
+		})
+	}
+
+	// 1. Live models an account has already synced from its upstream.
+	liveByProvider := make(map[pool.AccountType]int)
 	for _, acc := range s.pool.List() {
 		for _, m := range acc.GetModels() {
-			if !seen[m.ID] {
-				seen[m.ID] = true
-				models = append(models, openai.ModelItem{
-					ID:      m.ID,
-					Object:  "model",
-					Created: now,
-					OwnedBy: string(acc.Type),
-				})
+			before := len(models)
+			add(m.ID, acc.Type)
+			if len(models) > before {
+				liveByProvider[acc.Type]++
 			}
 		}
 	}
 
-	// 2. Default models if no dynamic models yet
-	if len(models) == 0 {
-		for _, up := range s.upstreams.All() {
-			for _, m := range up.DefaultModels() {
-				if seen[m] {
-					continue
-				}
-				seen[m] = true
-				models = append(models, openai.ModelItem{
-					ID:      m,
-					Object:  "model",
-					Created: now,
-					OwnedBy: string(up.ID()),
-				})
-			}
+	// 2. The static catalog for providers that reported nothing live.
+	//
+	// Per-provider fallback rather than a union: a provider with synced
+	// accounts already lists what it serves, and merging the static list on top
+	// advertises ids no upstream returned, which a client can then select and
+	// fail on. A provider with no accounts still advertises its channel.
+	for _, up := range s.upstreams.All() {
+		if liveByProvider[up.ID()] > 0 {
+			continue
+		}
+		for _, id := range up.DefaultModels() {
+			add(id, up.ID())
 		}
 	}
 
@@ -236,6 +325,13 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	provider, upstreamModel := s.ResolveProvider(req.Model)
 	req.Model = upstreamModel
 
+	// Attribute the request for the metrics record. The requested name is what
+	// the operator recognises, so it is recorded rather than the upstream one.
+	if info := requestInfoFrom(r.Context()); info != nil {
+		info.Model = rawModel
+		info.Provider = provider
+	}
+
 	// Check and inject web search if requested
 	s.maybeInjectWebSearch(&req)
 
@@ -244,6 +340,9 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 
 	resp, up, err := s.callUpstream(r.Context(), provider, &req, bodyBytes)
 	if err != nil {
+		if info := requestInfoFrom(r.Context()); info != nil {
+			info.Err = err.Error()
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -420,19 +519,30 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type AccountDTO struct {
-	ID         string               `json:"id"`
-	Type       string               `json:"type"`
-	Name       string               `json:"name"`
-	Status     string               `json:"status"` // "healthy", "cooldown", "expired"
-	FilePath   string               `json:"file_path,omitempty"`
-	ExpiresAt  string               `json:"expires_at"`
-	ProjectID  string               `json:"project_id,omitempty"`
-	Email      string               `json:"email,omitempty"`
-	UID        string               `json:"uid,omitempty"`
-	Realm      string               `json:"realm,omitempty"`
-	Product    string               `json:"product,omitempty"`
-	Domain     string               `json:"domain,omitempty"`
-	TokenMask  string               `json:"token_mask"`
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Status    string `json:"status"` // "healthy", "cooling", "frozen", "dead", "expired"
+	State     string `json:"state"`  // lifecycle state: active / soft_cooldown / hard_cooldown / disabled
+	StateNote string `json:"state_note,omitempty"`
+	// RecoverAt is when a cooling or frozen account is expected back, so the
+	// panel can show a countdown rather than a bare badge.
+	RecoverAt string `json:"recover_at,omitempty"`
+	FilePath  string `json:"file_path,omitempty"`
+	ExpiresAt string `json:"expires_at"`
+	ProjectID string `json:"project_id,omitempty"`
+	Email     string `json:"email,omitempty"`
+	UID       string `json:"uid,omitempty"`
+	Realm     string `json:"realm,omitempty"`
+	Product   string `json:"product,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+	TokenMask string `json:"token_mask"`
+	// Credits and CreditExpiresAt expose the remaining allowance and when it
+	// lapses, since dispatch spends the soonest-expiring allowance first.
+	Credits         string `json:"credits,omitempty"`
+	CreditExpiresAt string `json:"credit_expires_at,omitempty"`
+	InFlight        int    `json:"in_flight,omitempty"`
+
 	ModelCount int                  `json:"model_count"`
 	Models     []pool.ModelMetadata `json:"models,omitempty"`
 }
@@ -452,23 +562,41 @@ func (s *Server) handleAPIAccounts(w http.ResponseWriter, r *http.Request) {
 			expiresStr = acc.ExpiresAt.Format("2006-01-02 15:04:05")
 		}
 
+		snap := acc.Snapshot()
+
+		recoverAt := ""
+		if !snap.CooldownUntil.IsZero() {
+			recoverAt = snap.CooldownUntil.Format("2006-01-02 15:04:05")
+		}
+
+		creditExpiry := ""
+		if !acc.CreditExpiresAt.IsZero() {
+			creditExpiry = acc.CreditExpiresAt.Format("2006-01-02 15:04:05")
+		}
+
 		ms := acc.GetModels()
 		dtos = append(dtos, AccountDTO{
-			ID:         acc.ID,
-			Type:       string(acc.Type),
-			Name:       acc.Name,
-			Status:     acc.Status(),
-			FilePath:   acc.FilePath,
-			ExpiresAt:  expiresStr,
-			ProjectID:  acc.ProjectID,
-			Email:      acc.Email,
-			UID:        acc.UID,
-			Realm:      acc.Realm,
-			Product:    acc.Product,
-			Domain:     acc.Domain,
-			TokenMask:  mask,
-			ModelCount: len(ms),
-			Models:     ms,
+			ID:              acc.ID,
+			Type:            string(acc.Type),
+			Name:            acc.Name,
+			Status:          acc.Status(),
+			State:           string(snap.State),
+			StateNote:       snap.Reason,
+			RecoverAt:       recoverAt,
+			FilePath:        acc.FilePath,
+			ExpiresAt:       expiresStr,
+			ProjectID:       acc.ProjectID,
+			Email:           acc.Email,
+			UID:             acc.UID,
+			Realm:           acc.Realm,
+			Product:         acc.Product,
+			Domain:          acc.Domain,
+			TokenMask:       mask,
+			Credits:         acc.Credits,
+			CreditExpiresAt: creditExpiry,
+			InFlight:        acc.InFlight,
+			ModelCount:      len(ms),
+			Models:          ms,
 		})
 	}
 
@@ -496,16 +624,29 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 		healthy[up.ID()] = s.pool.Count(up.ID()) > 0
 	}
 
+	// A name several providers serve is several rows, not one; see handleModels.
 	seen := make(map[string]bool)
-	var list []UIModelItem
+	mark := func(id string, owner pool.AccountType) bool {
+		key := string(owner) + "/" + id
+		if id == "" || seen[key] {
+			return false
+		}
+		seen[key] = true
+		return true
+	}
 
-	// 1. Gather dynamic models from accounts
+	var list []UIModelItem
+	// liveByProvider counts the models each provider reported from a real
+	// account, so step 2 knows which channels still need the fallback.
+	liveByProvider := make(map[pool.AccountType]int)
+
+	// 1. Live models an account has synced, which carry upstream metadata.
 	for _, acc := range s.pool.List() {
 		for _, m := range acc.GetModels() {
-			if seen[m.ID] {
+			if !mark(m.ID, acc.Type) {
 				continue
 			}
-			seen[m.ID] = true
+			liveByProvider[acc.Type]++
 			displayName := m.Name
 			if displayName == "" {
 				displayName = m.ID
@@ -526,26 +667,41 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. Static catalog for every registered provider, for models not yet covered
+	// 2. The static catalog, but only for providers that have no live models.
+	//
+	// This is a per-provider fallback, not a union. A provider with synced
+	// accounts already reports what it actually serves, and merging the static
+	// list on top would mix unverified ids into a live list — which is exactly
+	// how invented model names reached the panel. A provider with no accounts
+	// still needs to advertise something so its channel is discoverable.
 	for _, up := range s.upstreams.All() {
-		for _, id := range up.DefaultModels() {
-			if seen[id] {
+		if liveByProvider[up.ID()] > 0 {
+			continue
+		}
+		for _, m := range up.ModelCatalog() {
+			if !mark(m.ID, up.ID()) {
 				continue
 			}
-			seen[id] = true
 			note := fmt.Sprintf("通道未就绪 (需添加 %s 凭据)", up.Label())
 			if healthy[up.ID()] {
 				note = "默认推荐模型"
 			}
+			name := m.Name
+			if name == "" {
+				name = m.ID
+			}
 			list = append(list, UIModelItem{
-				ID:                id,
-				Name:              id,
+				ID:                m.ID,
+				Name:              name,
+				DescriptionZh:     m.DescriptionZh,
+				Credits:           m.Credits,
+				MaxInputTokens:    m.MaxInputTokens,
+				SupportsImages:    m.SupportsImages,
+				SupportsReasoning: m.SupportsReasoning,
+				SupportsToolCall:  m.SupportsToolCall,
 				Provider:          string(up.ID()),
 				Active:            healthy[up.ID()],
 				Note:              note,
-				SupportsToolCall:  true,
-				SupportsReasoning: modelLooksReasoning(id),
-				SupportsImages:    up.ID() == pool.TypeAntigravity,
 			})
 		}
 	}
@@ -681,8 +837,11 @@ func (s *Server) handleAPIImportAccount(w http.ResponseWriter, r *http.Request) 
 		_ = pool.SaveAccountToFile(acc)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	// Realm is echoed because it selects the upstream host: a Qoder credential
+	// imported without one silently defaults to the international endpoints, so
+	// a CN account pointed at the wrong host would otherwise fail with a 401
+	// that gives no hint as to why.
+	resp := map[string]interface{}{
 		"status":       "ok",
 		"account_id":   acc.ID,
 		"type":         acc.Type,
@@ -690,7 +849,13 @@ func (s *Server) handleAPIImportAccount(w http.ResponseWriter, r *http.Request) 
 		"models_count": len(ms),
 		"models":       ms,
 		"fetch_error":  fetchErrMsg,
-	})
+	}
+	if acc.Realm != "" {
+		resp["realm"] = acc.Realm
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleAPIResetCooldown(w http.ResponseWriter, r *http.Request) {
@@ -700,6 +865,80 @@ func (s *Server) handleAPIResetCooldown(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleAPICheckin serves the daily check-in.
+//
+//	GET  /api/checkin              -> the last scheduled run, if any
+//	POST /api/checkin              -> run now for every provider
+//	POST /api/checkin?provider=X   -> run now for one provider
+//	POST /api/checkin?provider=X&id=Y -> run now for one account
+func (s *Server) handleAPICheckin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == http.MethodGet {
+		last := pool.CheckinSummary{}
+		if s.checkin != nil {
+			if summary := s.checkin.Last(); summary != nil {
+				last = *summary
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"last_run":  last,
+			"providers": s.checkinProviders(),
+		})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	accountID := strings.TrimSpace(r.URL.Query().Get("id"))
+
+	var summary pool.CheckinSummary
+	if provider != "" {
+		summary = s.RunCheckin(ctx, provider, accountID)
+	} else {
+		summary = s.RunCheckinAll(ctx)
+	}
+
+	_ = json.NewEncoder(w).Encode(summary)
+}
+
+// checkinProviders reports which providers have a check-in route configured, so
+// the dashboard can distinguish "nothing to do" from "not set up".
+func (s *Server) checkinProviders() []map[string]interface{} {
+	registered := s.upstreams.All()
+	out := make([]map[string]interface{}, 0, len(registered))
+	for _, up := range registered {
+		out = append(out, map[string]interface{}{
+			"id":        string(up.ID()),
+			"label":     up.Label(),
+			"accounts":  s.pool.Count(up.ID()),
+			"supported": s.providerSupportsCheckin(up.ID()),
+		})
+	}
+	return out
+}
+
+// providerSupportsCheckin reports whether a provider's configured check-in path
+// is non-empty.
+func (s *Server) providerSupportsCheckin(id pool.AccountType) bool {
+	switch id {
+	case pool.TypeWorkBuddy:
+		return strings.TrimSpace(s.cfg.Providers.WorkBuddy.CheckinPath) != ""
+	case pool.TypeQoder:
+		return strings.TrimSpace(s.cfg.Providers.Qoder.CheckinPath) != ""
+	default:
+		return false
+	}
 }
 
 func (s *Server) aggregateOpenAISSEToJSON(w http.ResponseWriter, src io.Reader, model string) {

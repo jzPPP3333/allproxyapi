@@ -32,13 +32,15 @@ internal/
     upstream.go             Upstream 接口 + Registry + 路由解析 + 响应转发
     adapters.go             三个 provider 的 adapter 实现
     router.go               HTTP 路由、鉴权、面板 API
+    checkin.go              签到编排
+    checkin_schedule.go     每日签到调度器
     translator.go           OpenAI ⇄ Gemini ⇄ Anthropic 协议转换
     schema.go               Gemini 工具参数 schema 净化
     openai/, anthropic/     下游协议类型定义
   egress/
-    antigravity/            Cloud Code PA 客户端 + envelope 解包
-    workbuddy/              双 region 客户端 + 身份指纹头
-    qoder/                  region 端点 + 凭据交换/刷新 + 模型别名
+    antigravity/            Cloud Code PA 客户端 + envelope 解包 + project 嗅探 + 模型目录
+    workbuddy/              双 region 客户端 + 身份指纹头 + 模型目录 + 签到
+    qoder/                  region 端点 + 凭据交换/刷新 + COSY 信封 + 设备指纹 + 签到
   web/                      内嵌控制面板
   webtools/                 可选的联网搜索注入
 ```
@@ -51,9 +53,11 @@ type Upstream interface {
     Label() string
     Format() ResponseFormat                                     // OpenAI | Gemini 帧格式
     DefaultModels() []string
+    ModelCatalog() []pool.ModelMetadata                         // 同一份目录，带元数据
     FetchModels(ctx, *pool.Account) ([]pool.ModelMetadata, error)
     Chat(ctx, *pool.Account, *openai.ChatCompletionRequest, rawBody []byte) (*http.Response, error)
     Unwrap(io.Reader) (io.Reader, error)
+    Checkin(ctx, *pool.Account) (pool.CheckinResult, error)     // 无签到概念时返回 unsupported
 }
 ```
 
@@ -110,19 +114,97 @@ curl http://127.0.0.1:8320/v1/messages \
 | `GET /v1/models` | 上游动态发现 + 静态兜底 |
 | `POST /v1/messages/count_tokens` | token 估算 |
 | `GET /health` | 健康检查与账号池状态 |
-| `GET /api/*` | 控制面板 API |
+| `GET /api/status` | 面板状态 |
+| `POST /api/checkin` | 立即签到（可带 `provider` / `id` 过滤） |
+| `GET /api/checkin` | 上次调度结果与各通道签到支持情况 |
+| `GET /api/metrics` | QPS、TTFT 分位、按模型/账号的用量与最近请求日志 |
+| `POST /api/reload` | 热重载配置（可带 `?config=<path>`） |
+| `GET /api/*` | 其余控制面板 API |
 
 ---
 
 ## 模型路由
 
-三种方式，优先级从高到低：
+四级查找链，优先级从高到低：
 
-1. **显式前缀**：`qoder/ultimate`、`antigravity/gemini-3.6-flash` —— 前缀必须是已注册的 provider id。
-2. **配置规则**：`routing.model_rules` 按顺序对小写模型名做正则匹配，首个命中生效。
-3. **默认 provider**：`routing.default_provider`。
+1. **显式前缀**：`qoder/ultimate`、`antigravity/gemini-3.6-flash` —— 前缀必须是已注册的 provider id。请求里写死的前缀优先级最高，别名表不会覆盖它。
+2. **别名表**：`routing.model_mapping`，见下。
+3. **配置规则**：`routing.model_rules` 按顺序对小写模型名做正则匹配，首个命中生效。
+4. **默认 provider**：`routing.default_provider`。
+
+### 别名表（model_mapping）
+
+给只会说标准模型名的客户端用 —— 比如固化了 `claude-3-5-sonnet` 的 ChatBox，而 Antigravity 上游只认 `claude-sonnet-4-6`：
+
+```yaml
+routing:
+  model_mapping:
+    # 写成 "<provider>/<模型>" 则两者都固定
+    "claude-3-5-sonnet": "antigravity/claude-sonnet-4-6"
+    "qwen-max":          "qoder/ultimate"
+    # 只写模型名，则只换模型，provider 交给下面的规则判断
+    "deepseek-r1":       "deepseek-v4-pro"
+```
+
+- **键**忽略大小写，`Claude-3-5-Sonnet` 与 `claude-3-5-sonnet` 等价。
+- **值是 `<provider>/<模型>`**：两者都用。若 `/` 前半不是已注册的 provider，整个值会被当作模型名，不会静默丢弃改写。
+- **值是纯模型名**：只覆盖上游模型，provider 仍由 `model_rules` 决定（用改写后的名字去匹配）。
+- 空值会被忽略，等于没配置。
+- 修改后 `POST /api/reload` 即刻生效。
 
 未识别的 provider 前缀不会被当作路由指令，会照常走规则匹配。
+
+### 清单里的名字可以直接用
+
+`/v1/models` 列出的每个模型名都保证能**不加前缀**直接请求，并且落到列它出来的那个 provider。这条不变量有测试守着（`internal/ingress/models_test.go`），它覆盖了曾经的三个真实缺陷：
+
+| 症状 | 原因 |
+|---|---|
+| 只配了一个 provider，清单里只剩它 | 静态兜底只在动态模型为空时执行，一个账号同步成功就会盖住另外两家 |
+| 选了清单里的名字，拿到的却是另一个模型 | 路由规则写死了 `upstream_model`，把所有 `claude-*` 折叠成同一个上游模型 |
+| 同一个模型名出现两次、归属不同 | 去重的 key 只用模型名，没用 `provider/模型名` |
+
+因此 `model_rules` 里的 `upstream_model` 留空即可 —— provider 自己的别名表负责映射，在规则里再写一次反而会覆盖掉它。
+
+**多 provider 提供同名模型时**：清单里会各列一行，归属于各自的 provider。此时不加前缀会有歧义，走规则匹配；要精确指定请用 `provider/模型名`。
+
+**人话别名仍然可用**：`claude-3-7-sonnet`、`deepseek-chat`、`kimi` 这类名字照常接受并被 provider 的映射表转换，只是不再作为独立模型出现在清单里 —— 两个名字指向同一个上游模型不该被算成两个模型。
+
+### 档位条目会被过滤掉
+
+WorkBuddy 的上游模型接口把**档位预设**和真实模型混在同一个 `data.models` 数组里返回。以下 id 取自一次真实响应：
+
+```
+auto            Auto              自动为每个任务匹配模型
+default         Default           x2.20 credits
+lite            lite              Agent (promptHookEvaluator) 模型
+glm-5.3         GLM-5.3           x0.79 credits        ← 真实模型
+kimi-k3-1       Kimi-K3           x1.62 credits        ← 真实模型
+```
+
+档位是**服务端路由别名**，不是一个可选模型，因此默认从清单里滤除。过滤规则是配置而非代码，上游改名时改 `providers.workbuddy.exclude_model_patterns` 即可，无需重新编译：
+
+```yaml
+providers:
+  workbuddy:
+    exclude_model_patterns:
+      - "(?i)^auto$"
+      - "(?i)^default$"
+      - "(?i)^lite$"
+```
+
+留空为 `[]` 则原样显示全部条目。匹配的是模型 id、忽略大小写、锚定首尾，所以 `deepseek-default` 这类名字不会被误伤。被过滤的条目数以日志形式输出，不会静默丢弃。
+
+**这些档位名来自对真实接口的观察，不是文档。** 上游改过档位命名，因此它们是配置项；发现未被匹配的档位时加进 `exclude_model_patterns`，不要改代码里的默认表。
+
+### 静态目录只是兜底
+
+面板和 `/v1/models` **不会**把静态目录和实时数据并在一起 —— 那是按 provider 各自兜底：
+
+- 该通道有账号同步成功 → 只显示上游真实返回的模型。
+- 该通道没有账号 → 才显示静态目录，并标注「通道未就绪」。
+
+这样静态目录里没验证过的 id 不会混进实时清单，客户端也就不会选到上游不存在的模型。所有静态目录的 id 都来自可核实的来源：WorkBuddy 来自真实接口响应，Antigravity 来自官方客户端注册表，Qoder 来自客户端代码中定义的档位集合。
 
 ---
 
@@ -153,7 +235,9 @@ providers:
 
 从你自己已在运行的 Antigravity 客户端里取这两个值。留空时该通道仅在 access token 有效期内可用，过期后刷新会明确报错而不会静默失败。
 
-**WorkBuddy** —— 支持 `snake_case`、`camelCase`、嵌套 `token`/`data` 三种历史落盘格式。
+**WorkBuddy** —— 支持四种落盘格式：顶层 `snake_case`、`camelCase`、嵌套 `token`/`data`，以及**桌面客户端状态文件**（tokens 嵌在 `auth` 下、身份嵌在 `account` 下、区服取自 `auth.domain`）。
+
+标准格式：
 
 ```json
 {
@@ -164,6 +248,18 @@ providers:
   "refresh_token": "...."
 }
 ```
+
+桌面状态文件无需你转换，直接放进扫描目录即可被识别：
+
+```
+%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth/*.info
+```
+
+该目录已在默认 `storage.oauth_dirs` 中，`auth.domain` 为 `workbuddy.cn` 判为 `cn` 区、`workbuddy.ai` 判为 `intl` 区，账号名取自 `account.nickname`（缺失则回退到手机号）。
+
+**加密凭据无法直接读取**：客户端较新版本会把 token 存成 `{"$wbEncrypted":1,"envelope":"..."}`（AES-GCM，密钥在该客户端 Electron 的 `Local State` 中、由 Windows DPAPI 以你的用户账户保护）。网关不会伪装能解开它 —— 这类文件会被**明确报为加密并跳过**（启动日志里能看到），而不是静默消失。做法有二：从客户端导出明文凭据，或用上面的标准格式重新写一份。
+
+> 存储布局会随客户端版本变化。若某个新格式没能被识别，把文件结构贴出来即可加支持 —— 解析层是数据驱动的，无需改动其他部分。
 
 **Qoder** —— 按 token 前缀判别：`pt-`（个人访问令牌）、`jt-`（job token）、`dt-`（设备流令牌）、`drt-`（设备刷新令牌）。
 
@@ -184,20 +280,243 @@ Qoder 凭据的处理规则：
 | `dt-` 设备令牌 | 直接使用；用 `drt-` 刷新令牌续期 |
 | `jt-` job token | 短生命周期，无刷新路径 —— 过期后需重新导入 |
 
-**Qoder 未经实机验证的假设**：默认 host 对（intl `api2-v2.qoder.sh` / cn `gateway.qoder.com.cn`）与 OpenAI 兼容路由 `/model/v1/chat/completions` 来自公开的社区逆向记录，未经本仓库对真实账号的端到端验证。若上游迁移，改 `providers.qoder.base_url` / `auth_url` 即可，无需改代码。
+### 如何导入 Qoder
+
+Qoder **不像 WorkBuddy 那样把可读 token 落在磁盘上**。以下是在真实安装上核实过的存储布局（`~/.qoder-cn` 为 CN 版，国际版是 `~/.qoder`）：
+
+```
+~/.qoder-cn/
+  .auth/machine_id                 纯文本设备 ID
+  .qoder-app-status.json           登录状态、用户名、uid（无 token）
+  .models/default                  {"key":"auto","uid":...}
+  .models/<uid>/catalog-v6         加密的模型目录
+  .cache/endpoint-cache.json       端点（已核实 = gateway.qoder.com.cn）
+```
+
+**token 不在这里**。凭据由客户端持有，磁盘上只有经过客户端自身密钥加密的密文，因此网关**无法**从这些文件直接读出 token —— 这一点和 WorkBuddy 的 `$wbEncrypted` 是同一类问题。
+
+因此导入 Qoder 有三条可用路径，按推荐顺序：
+
+**1. 导入个人访问令牌（推荐，最稳）**
+
+在 Qoder 客户端里生成一个 `pt-` 开头的个人访问令牌，然后写一份凭据文件放进扫描目录：
+
+```json
+{
+  "type": "qoder",
+  "access_token": "pt-....",
+  "account_name": "you@example.com",
+  "realm": "cn"
+}
+```
+
+`pt-` 是长期凭据，网关会在**首次请求时**就换取短生命周期的 `jt-`，并在 `jt-` 过期后自动重新换取 —— 原始 `pt-` 会保留在账号里作为换取来源，所以这是一条可无限续期的链路，不需要你干预。放进 `data/oauth/`，或面板「导入凭据」。**`realm` 必须和你的客户端一致** —— CN 版填 `cn`。漏填会默认成 `intl`，请求打到国际端点，报一个看不出原因的 401。导入接口会把最终生效的 `realm` 回显出来，便于当场核对。（`type` 字段可省 —— `pt-` 前缀会触发识别。）
+
+**2. 复用客户端已登录的会话**
+
+CN 版的数据目录是 `~/.qoder-cn`（**不是** `~/.qoder`）。网关已把 `.qoder`、`.qoder-cn`、以及两个的 `.auth` 子目录都列进 `storage.oauth_dirs`，同时也读取客户端认的 `QODER_CONFIG_DIR` / `QODERCN_CONFIG_DIR` 环境变量。若客户端把可读凭据写到了这些位置，重启网关即可自动发现。目前实测的 CN 版安装里没有这类文件。
+
+**3. 装 Qoder CLI 后导出**
+
+Qoder 附带 `qoderclicn` CLI（`~/.qoder-cn/entry/` 下有分发脚本，`~/.qoder-cn/bin/` 是 CLI 安装位置；本机未安装）。若你的环境装了它，可以用它的凭据子命令导出 token，再按路径 1 的格式写入。
+
+**realm 怎么选**：CN 版客户端 = `cn`（对应 `gateway.qoder.com.cn`），国际版 = `intl`（对应 `api2-v2.qoder.sh`）。端点已经过本机客户端缓存核实；若上游迁移，改 `providers.qoder.base_url` / `auth_url` 即可，无需改代码。
+
+### Qoder COSY 信封
+
+Qoder 客户端可以给请求套一层加密信封。网关内置了完整的纯 Go 实现（RSA 包裹会话密钥、AES-128-CBC 载荷、自定义 base64 字典、HMAC 签名），默认**关闭**——公共推理主机接受明文 JSON。
+
+```
+
+        明文 JSON ──► AES-128-CBC（随机 session key + IV）──────────┐
+                          │                                        │
+                          └── session key ──► RSA 公钥包裹 ──► "ek" │
+                                                                    ▼
+        字典编码( JSON{v, alg, key_alg, ek, iv, data, ts, nonce, sig} )
+```
+
+启用时把密钥填进 `data/config.yaml`：
+
+```yaml
+providers:
+  qoder:
+    cosy:
+      public_key_pem: |
+        -----BEGIN PUBLIC KEY-----
+        ...
+        -----END PUBLIC KEY-----
+      key_alg: "RSA-OAEP-SHA256"   # 或 RSA-PKCS1v15
+      sign_key: "<可选 HMAC 密钥>"
+```
+
+配置项含义：
+
+| 字段 | 说明 |
+|---|---|
+| `public_key_pem` | 包裹会话密钥的服务器 RSA 公钥，留空则关闭信封 |
+| `private_key_pem` | 仅在上游回包同样加密时才需要 |
+| `key_alg` | RSA 填充模式，默认 OAEP-SHA256 |
+| `alphabet` | 覆盖默认的 64 字符 base64 字典 |
+| `sign_key` | 非空则对 `iv‖密文‖时间戳` 做 HMAC-SHA256 |
+
+密钥解析失败时信封会保持关闭并在日志中报错，不会静默发送上游无法解读的请求。
+
+设备指纹（`X-Machine-Id` / `X-Machine-Token`）由账号身份派生并持久化，而非每次启动随机生成——随机值会让上游把同一个账号当成一台新设备，从而触发风控。派生规则见 [fingerprint.go](internal/egress/qoder/fingerprint.go)。
+
+### 项目 ID 自动嗅探
+
+Antigravity 的信封需要一个 project id。账号文件里没有时，网关会调用 `v1internal:loadCodeAssist` 自动探测，缓存后写回账号文件；探测失败则回退到 `providers.antigravity.default_project`，不影响正常请求。
+
+### 每日签到
+
+签到路由因部署而异，因此**不硬编码**，而是按 provider 配置。未配置时该通道报告为 `unsupported`，不会拿探测到的 URL 去打真实账号。
+
+```yaml
+providers:
+  workbuddy:
+    checkin_path: "/v2/<你的签到路由>"
+    daily_checkin: true
+    checkin_hour: 9
+```
+
+手动触发或查看上次结果：
+
+```bash
+curl http://127.0.0.1:8320/api/checkin                                   # 上次调度结果 + 各通道支持情况
+curl -X POST http://127.0.0.1:8320/api/checkin                           # 立即为所有通道签到
+curl -X POST "http://127.0.0.1:8320/api/checkin?provider=qoder"          # 指定通道
+curl -X POST "http://127.0.0.1:8320/api/checkin?provider=qoder&id=<acc>" # 指定账号
+```
+
+Antigravity 的额度随 Google 套餐发放，没有客户端侧签到动作，固定报告 `unsupported`。
+
+### 额度耗尽冷却
+
+额度耗尽与限流性质不同：前者不会在短时间内恢复。因此响应 `402`，或响应体携带额度耗尽码（Qoder/WorkBuddy `6004`/`6005`/`10006`，Gemini `RESOURCE_EXHAUSTED`）时，账号会被冷却 **30 分钟**，而不是限流的 60 秒，让账号池直接绕开它而不是反复撞同一堵墙。
 
 ---
 
 ## 控制面板
 
-`http://127.0.0.1:8320/` 提供：账号池状态与冷却情况、三通道模型清单（区分实时拉取与静态兜底）、上游同步、凭据导入、冷却重置。
+`http://127.0.0.1:8320/` 提供：账号池状态（四态徽章与恢复倒计时）、三通道模型清单（区分实时拉取与静态兜底）、上游同步、凭据导入、冷却重置、实时指标与请求日志、在线演练场。
+
+### 实时指标
+
+`GET /api/metrics` 返回自启动以来的累计数据：
+
+| 指标 | 说明 |
+|---|---|
+| `qps` | 平均每秒请求数 |
+| `ttft_ms_p50` / `ttft_ms_p95` | 首 token 延迟中位数与 P95（仅流式有意义） |
+| `by_model` / `by_provider` / `by_account` | 用量分布，用于看清哪个模型、哪个通道、哪个账号在消耗 |
+| `by_status` | 状态码分布 |
+| `requests` | 最近 200 条请求（面板默认显示 40 条） |
+
+延迟窗口只保留最近 256 个样本，避免一次突发把延迟读数长期拉高。
+
+**日志脱敏**：Bearer 令牌、`sk-`/`pt-`/`jt-`/`dt-`/`drt-` 前缀令牌、JWT、Google OAuth 令牌（`ya29.` / `1//`）、以及 URL 里的 `access_token`/`api_key`/`secret` 等参数，在写入请求记录**之前**就已替换为 `[REDACTED]` —— 密钥不会进入内存里的日志。请求路径只记录到 path，不带 query string。
+
+### 配置热更新
+
+```bash
+curl -X POST http://127.0.0.1:8320/api/reload
+```
+
+响应会明确区分两类字段：
+
+- `applied` —— 已生效：API key、出网代理、路由规则与默认 provider、各通道 `checkin_path`/`daily_checkin`、WorkBuddy `exclude_model_patterns`、Antigravity `default_project`。
+- `restart_required` —— **不能**热改，需要重启：监听地址与端口、凭据扫描目录、上游 base_url、Antigravity OAuth 凭据、Qoder COSY 密钥。
+
+配置解析失败时**不会**部分应用 —— 运行中的配置保持原样，并返回 400 说明原因。
+
+### 在线演练场
+
+面板内置聊天框，可直接选任意已接入模型测试流式输出、思考链（`reasoning_content`）与多轮对话，走的就是客户端会走的 `/v1/chat/completions`。
 
 ## 账号池
 
-- 轮询选号，跳过冷却中与已过期的账号。
-- 提交前故障转移：最多重试 3 次，每次换号。
-- 429 → 冷却 60s；401/403 → 刷新后重试一次，失败则冷却 300s。
-- 后台 `refresher` 每 60s 检查并续期即将过期的凭据。
+### 生命周期状态
+
+账号只处于四种状态之一。区分它们的关键是**为什么**不可用，因为那决定了它什么时候回来：
+
+```
+                429 / 并发上限
+   +---------+ ─────────────────► +-----------------+
+   | active  |                    |  soft_cooldown  |  10 分钟起，翻倍封顶 2 小时
+   |  就绪   | ◄───────────────── |     软冷却      |  （仅限触发的那个模型）
+   +---------+   退避到期           +-----------------+
+       │  ▲
+       │  │ 凭证刷新成功
+       │  │
+       │  └────────────────────── +-----------------+
+       │                         |  hard_cooldown  |  402 / 额度耗尽
+       │       每日 04:00 CST 重置 |     硬冷却      |  冻结至次日重置
+       │ ◄────────────────────── +-----------------+
+       │
+       │ 401 且刷新失败
+       ▼
+   +-----------+
+   | disabled  |  需人工重新登录
+   +-----------+
+```
+
+关键规则：
+
+- **软冷却按模型隔离**：某个模型被限流，不影响同账号跑其他模型。
+- **硬冷却优先于软冷却**：额度冻结期间来的 429 不会缩短冻结时间 —— 令牌有效不等于额度恢复。
+- **刷新成功会清软冷却并重新启用失效账号**，但**不会**清硬冷却。
+- 额度重置时间按 CST 04:00 计算（`ResetLocation` / `DailyResetHour` 可改）。
+
+### 选号算法
+
+请求到达时按顺序执行：
+
+1. **健康过滤** —— 剔除冷却、失效、令牌过期的账号。
+2. **能力匹配** —— 账号已发布模型列表时，只选包含目标模型的账号；未发布的账号视为可用（否则会因为还没发现就把能用账号排除掉）。
+3. **价值优先** —— 免费额度有时效性（当天不用次日清零），因此**优先调度额度最快过期的账号**。
+4. **加权随机短名单** —— 从前 5 名中按排名加权随机选一个。这里是加权而非均匀：均匀会让最差候选和最优候选概率相同，在小池子里等于让排序失去意义；加权既保留分流、又能把该花掉的额度花掉。
+5. **会话粘性** —— 同一会话 30 分钟内固定在同一账号，避免多轮对话被打散。
+
+### 可靠性
+
+- **Singleflight 刷新**：同一账号的并发刷新合并为一次上游调用。多个请求同时发现令牌将过期时，若不合并会各自刷新，而某些 provider 会轮换 refresh token，只有最后一次响应有效。
+- **原子写入**：凭据刷新时先写临时文件、`Sync` 落盘、再 `rename` 替换。直接截断写入会留下一个文件为空或半写的窗口，崩溃或被杀会导致凭据损坏、账号需要重新导入。
+- **凭据热插拔**：每 10s 轮询凭据目录，新增、修改、删除文件都会即时反映到账号池，无需重启。轮询而非 inotify，是为了不引入文件系统通知依赖，并让网络共享目录行为一致。
+
+故障转移最多重试 3 次，每次换号；失败的账号会被打上对应状态，不会立刻被再次选中。
+
+---
+
+## 构建与部署
+
+**本地构建**
+
+```bash
+go build -o allproxyapi ./cmd/proxy
+go build ./... && go vet ./... && go test ./...
+```
+
+**跨平台打包** —— 一次产出 6 个目标，每个都带示例配置与许可证：
+
+```bash
+./build.sh                    # 全部目标
+./build.sh linux/amd64        # 指定目标
+```
+
+产物在 `dist/`，含 `windows/amd64`、`windows/arm64`、`linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`。二进制内嵌版本信息：
+
+```bash
+allproxyapi -version
+# AllProxyAPI v1.0.0 (commit a1b2c3d, built 2026-10-16T08:50:22Z)
+```
+
+**Docker**
+
+```bash
+docker compose up -d --build
+```
+
+镜像基于 `alpine:3.20`，多阶段构建，以非 root 用户运行，并带 `/health` HEALTHCHECK。`docker-compose.yml` 默认只把端口发布到宿主机回环（`127.0.0.1:8320`）——网关自身有 API key 鉴权，但把一个 LLM 代理默认暴露到网络上不是安全的默认值。凭据通过 `./data` 卷持久化，令牌轮换后写回宿主机。
 
 ---
 
@@ -207,7 +526,10 @@ Qoder 凭据的处理规则：
 go build ./...
 go vet ./...
 go test ./...
+node webui-test/dashboard.test.js   # 面板渲染测试（需 Node）
 ```
+
+面板是内嵌 HTML 里的手写 JS，没有构建步骤，所以拼写错误和过期的厂商假设 `go test` 看不到。`webui-test/dashboard.test.js` 把内嵌脚本抽出来，用最小 DOM 桩跑一遍渲染路径 —— 新增 provider 时尤其跑一下，否则很容易出现模型挂错厂商标签这类问题。
 
 ---
 

@@ -11,6 +11,22 @@ server:
   # Optional egress proxy for providers that do not set their own. Leave empty
   # to fall back to HTTPS_PROXY / HTTP_PROXY or the Windows system proxy.
   proxy: ""
+  # Request log level: debug, info, warn or error. Debug additionally logs every
+  # upstream request line.
+  log_level: "info"
+
+# Account pool tuning. All of these take effect on POST /api/reload.
+pool:
+  # Backoff applied to an account after a rate limit (429 or a concurrency cap).
+  # The first cooldown is the base; each consecutive failure doubles it, capped
+  # at the max.
+  soft_cooldown_base_minutes: 10
+  soft_cooldown_max_minutes: 120
+  # How often to refresh each account's remaining-allowance snapshot with a
+  # lightweight read. This doubles as keepalive, preventing an idle session from
+  # being dropped upstream. 0 disables it.
+  keepalive_hours: 6
+  credit_refresh_hours: 3
 
 providers:
   # Google Antigravity (Cloud Code PA). Requests are translated to the Gemini
@@ -31,6 +47,23 @@ providers:
   workbuddy:
     default_realm: "cn"
     default_product: "workbuddy"
+    # Daily check-in is deployment specific: the route differs between the CN
+    # and international deployments, so it is configured rather than guessed.
+    # Leave empty to skip check-in for this provider entirely.
+    checkin_path: ""
+    daily_checkin: false
+    checkin_hour: 9
+    # The upstream model list mixes its tier presets (auto, default, lite) in
+    # with real models. Those are server-side routing aliases rather than
+    # selectable models, so they are filtered out here. The ids below come from
+    # an observed upstream response, not from documentation, and the upstream
+    # has renamed them before -- which is why this is config rather than code.
+    # Patterns are regexps matched against the model id, case-insensitively.
+    # Set to [] to show every entry as-is.
+    exclude_model_patterns:
+      - "(?i)^auto$"
+      - "(?i)^default$"
+      - "(?i)^lite$"
 
   # Alibaba Qoder. The inference host exposes an OpenAI-compatible
   # /model/v1/chat/completions route that needs no request signing.
@@ -44,17 +77,46 @@ providers:
     auth_url: ""
     client_version: "1.1.49"
     proxy: ""
+    # Daily check-in; same rules as WorkBuddy above.
+    checkin_path: ""
+    daily_checkin: false
+    checkin_hour: 9
+
+    # COSY request envelope. Empty public_key_pem sends requests as plain JSON,
+    # which the public inference host accepts. Fill this in to match a client
+    # build that signs its traffic. The key material is copied from your own
+    # Qoder installation and is intentionally not shipped with this repo, the
+    # same way the Antigravity OAuth client credentials are not.
+    cosy:
+      public_key_pem: ""
+      private_key_pem: ""
+      # "RSA-OAEP-SHA256" (default) or "RSA-PKCS1v15"
+      key_alg: ""
+      # Optional 64-character base64 dictionary override.
+      alphabet: ""
+      # Optional envelope HMAC key; empty disables signing.
+      sign_key: ""
 
 routing:
   # Provider used when no model rule matches. Must be a registered provider id.
   default_provider: "workbuddy"
+  # Explicit alias table, consulted before model_rules. For a client that only
+  # speaks standard names while the upstream renamed its models.
+  #   "<provider>/<model>" pins both; a bare model name overrides only the
+  #   model and lets model_rules pick the provider. Keys are case-insensitive.
+  model_mapping: {}
+    # "claude-3-5-sonnet": "antigravity/claude-sonnet-4-6"
+    # "qwen-max":          "qoder/ultimate"
+    # "deepseek-r1":       "deepseek-v4-pro"
   # Rules are evaluated in order against the lowercased model name. The first
   # match wins. An explicit "<provider>/<model>" prefix on the request always
   # takes precedence over these rules.
   model_rules:
+    # upstream_model is left empty so the adapter's own normalizer maps the
+    # alias. Setting it here pins every matching model to one upstream name.
     - pattern: "^claude-.*"
       provider: "antigravity"
-      upstream_model: "claude-sonnet-4-6"
+      upstream_model: ""
     - pattern: "^gemini-.*"
       provider: "antigravity"
       upstream_model: ""
@@ -73,16 +135,34 @@ routing:
     - pattern: "^gpt-.*"
       provider: "workbuddy"
       upstream_model: ""
-    - pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel|ultimate|performance|efficient).*"
+    # Qoder's tier presets. "auto" and "lite" are also WorkBuddy tier ids, so
+    # they are matched as exact names only, keeping the two channels
+    # distinguishable; use "qoder/auto" to address Qoder's unambiguously.
+    - pattern: "^(ultimate|performance|efficient)$"
+      provider: "qoder"
+      upstream_model: ""
+    - pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel).*"
       provider: "qoder"
       upstream_model: ""
 
 storage:
   # Directories scanned at startup for credential JSON. Each file is classified
   # as antigravity, workbuddy or qoder by its type field, token prefix, or path.
+  # Scanning is one level deep, so a nested location is listed explicitly.
   oauth_dirs:
     - "./data/oauth"
     - "~/.cli-proxy-api"
+
+    # WorkBuddy / CodeBuddy desktop credentials. Handles both the plain token
+    # export and the nested desktop state file under "auth".
     - "%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth"
+
+    # Qoder ships as two products: the CN build keeps its state in ~/.qoder-cn
+    # and the international one in ~/.qoder. The client also honours
+    # QODER_CONFIG_DIR / QODERCN_CONFIG_DIR; the gateway reads those too.
     - "%APPDATA%/Qoder"
+    - "%APPDATA%/Qoder CN"
     - "~/.qoder"
+    - "~/.qoder-cn"
+    - "~/.qoder/.auth"
+    - "~/.qoder-cn/.auth"

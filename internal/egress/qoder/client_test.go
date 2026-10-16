@@ -6,22 +6,35 @@ import (
 	"github.com/jzPPP3333/allproxyapi/internal/config"
 )
 
+// configForTest is the baseline config shared by the package's tests.
+func configForTest() config.QoderConfig {
+	return config.QoderConfig{Region: "intl", ClientVersion: "1.1.49"}
+}
+
+// TestNormalizeModel covers the pass-through contract.
+//
+// Qoder exposes tier presets, not named models, so normalization must not
+// rewrite a model name onto a tier: doing so would silently serve a different
+// model than the caller asked for. Only an empty request gets a default.
 func TestNormalizeModel(t *testing.T) {
 	cases := map[string]string{
-		"":                    "ultimate",
-		"ultimate":            "ultimate",
-		"qmodel_38max":        "qmodel_38max",
-		"Qwen3.8-Max":         "qmodel_38max",
-		"qwen-flash":          "qfmodel",
-		"qwen-max":            "qmodel_38max",
-		"deepseek-chat":       "dmodel",
-		"deepseek-v4-flash":   "dfmodel",
-		"kimi-k2-code":        "kmodel",
-		"kimi-k3":             "kmodel_latest",
-		"glm-5.3-flash":       "gfmodel",
-		"glm-5.3":             "gmodel",
-		"minimax-m3":          "mmodel",
+		"":            "auto",
+		"   ":         "auto",
+		"auto":        "auto",
+		"ultimate":    "ultimate",
+		"performance": "performance",
+		"efficient":   "efficient",
+		"lite":        "lite",
+		// A name that is not a tier is passed through unchanged rather than
+		// being mapped onto an unrelated tier.
+		"qwen-max":            "qwen-max",
+		"deepseek-chat":       "deepseek-chat",
+		"kimi-k3":             "kimi-k3",
+		"glm-5.3":             "glm-5.3",
+		"minimax-m3":          "minimax-m3",
 		"some-unmapped-model": "some-unmapped-model",
+		// Surrounding whitespace is trimmed.
+		"  ultimate  ": "ultimate",
 	}
 	for in, want := range cases {
 		if got := NormalizeModel(in); got != want {

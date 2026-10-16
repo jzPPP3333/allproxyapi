@@ -27,6 +27,26 @@ type Account struct {
 	LastError     string          `json:"last_error,omitempty"`
 	Models        []ModelMetadata `json:"models,omitempty"`
 
+	// Lifecycle state. hardCooldownUntil is an exhausted-allowance freeze that
+	// outlasts any soft cooldown; disabled means the credential cannot be
+	// repaired automatically.
+	hardCooldownUntil time.Time            `json:"-"`
+	disabled          bool                 `json:"-"`
+	modelCooldowns    map[string]time.Time `json:"-"`
+
+	// CreditExpiresAt is when the account's remaining free allowance lapses.
+	// Dispatch prefers accounts whose credit is about to expire, since that
+	// allowance is lost rather than rolled over.
+	CreditExpiresAt time.Time `json:"credit_expires_at,omitempty"`
+	// Credits is the last observed remaining allowance, for display and for
+	// prioritising dispatch. It is informational: dispatch never depends on it
+	// being accurate.
+	Credits string `json:"credits,omitempty"`
+
+	// InFlight is the number of requests currently dispatched to this account,
+	// used to avoid overloading one account under concurrency.
+	InFlight int `json:"in_flight,omitempty"`
+
 	// Antigravity specific
 	ProjectID string `json:"project_id,omitempty"`
 	Email     string `json:"email,omitempty"`
@@ -97,19 +117,32 @@ func (a *Account) IsCoolingDown() bool {
 	return time.Now().Before(a.CooldownUntil)
 }
 
+// Status is the display string for the account's availability. It delegates to
+// the lifecycle state so there is one source of truth; the legacy "healthy",
+// "cooldown" and "expired" names are preserved for existing consumers.
 func (a *Account) Status() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	now := time.Now()
-	if now.Before(a.CooldownUntil) {
-		return "cooldown"
+	switch a.State() {
+	case StateDisabled:
+		return "dead"
+	case StateHardCooldown:
+		return "frozen"
+	case StateSoftCooldown:
+		return "cooling"
 	}
-	if !a.ExpiresAt.IsZero() && now.After(a.ExpiresAt) {
+	// An active account whose token has lapsed is still usable: the dispatcher
+	// lets it through and the credential is refreshed on demand.
+	if a.IsExpired() {
 		return "expired"
 	}
 	return "healthy"
 }
 
+// SetTokens installs fresh credentials.
+//
+// A successful refresh proves the credential is good, so it also clears a soft
+// cooldown and re-enables a disabled account: the reason the account was out of
+// rotation no longer applies. A hard cooldown is left alone, because a valid
+// token does not restore an exhausted allowance.
 func (a *Account) SetTokens(access, refresh string, expiresAt time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -123,54 +156,64 @@ func (a *Account) SetTokens(access, refresh string, expiresAt time.Time) {
 	a.LastError = ""
 	a.FailStreak = 0
 	a.CooldownUntil = time.Time{}
+	a.disabled = false
 }
 
+// SetCooldown parks the account for a soft cooldown. It is kept for callers
+// that only know a duration; the state-specific setters express intent better.
 func (a *Account) SetCooldown(dur time.Duration, reason string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.FailStreak++
-	if dur <= 0 {
-		dur = time.Duration(a.FailStreak*30) * time.Second
-		if dur > 10*time.Minute {
-			dur = 10 * time.Minute
-		}
-	}
-	a.CooldownUntil = time.Now().Add(dur)
-	a.LastError = reason
+	a.SetSoftCooldown(dur, reason)
 }
 
+// ResetCooldown clears every cooldown on the account, for a manual operator
+// reset.
 func (a *Account) ResetCooldown() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.CooldownUntil = time.Time{}
+	a.hardCooldownUntil = time.Time{}
+	a.modelCooldowns = nil
 	a.FailStreak = 0
 	a.LastError = ""
+	a.disabled = false
 }
 
 func (a *Account) Clone() *Account {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return &Account{
-		ID:            a.ID,
-		Type:          a.Type,
-		Name:          a.Name,
-		FilePath:      a.FilePath,
-		AccessToken:   a.AccessToken,
-		RefreshToken:  a.RefreshToken,
-		ExpiresAt:     a.ExpiresAt,
-		CooldownUntil: a.CooldownUntil,
-		FailStreak:    a.FailStreak,
-		LastError:     a.LastError,
-		ProjectID:     a.ProjectID,
-		Email:         a.Email,
-		UID:           a.UID,
-		Realm:         a.Realm,
-		Product:       a.Product,
-		EnterpriseID:  a.EnterpriseID,
-		Domain:        a.Domain,
-		MachineID:     a.MachineID,
-		MachineToken:  a.MachineToken,
-		AccountName:   a.AccountName,
-		Models:        a.GetModels(),
+	c := &Account{
+		ID:                a.ID,
+		Type:              a.Type,
+		Name:              a.Name,
+		FilePath:          a.FilePath,
+		AccessToken:       a.AccessToken,
+		RefreshToken:      a.RefreshToken,
+		ExpiresAt:         a.ExpiresAt,
+		CooldownUntil:     a.CooldownUntil,
+		FailStreak:        a.FailStreak,
+		LastError:         a.LastError,
+		ProjectID:         a.ProjectID,
+		Email:             a.Email,
+		UID:               a.UID,
+		Realm:             a.Realm,
+		Product:           a.Product,
+		EnterpriseID:      a.EnterpriseID,
+		Domain:            a.Domain,
+		MachineID:         a.MachineID,
+		MachineToken:      a.MachineToken,
+		AccountName:       a.AccountName,
+		hardCooldownUntil: a.hardCooldownUntil,
+		disabled:          a.disabled,
+		CreditExpiresAt:   a.CreditExpiresAt,
+		Credits:           a.Credits,
+		InFlight:          a.InFlight,
+		Models:            a.GetModels(),
 	}
+	if len(a.modelCooldowns) > 0 {
+		c.modelCooldowns = make(map[string]time.Time, len(a.modelCooldowns))
+		for m, until := range a.modelCooldowns {
+			c.modelCooldowns[m] = until
+		}
+	}
+	return c
 }

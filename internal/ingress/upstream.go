@@ -2,6 +2,8 @@ package ingress
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jzPPP3333/allproxyapi/internal/config"
 	"github.com/jzPPP3333/allproxyapi/internal/ingress/openai"
 	"github.com/jzPPP3333/allproxyapi/internal/pool"
 )
@@ -40,6 +43,10 @@ type Upstream interface {
 	// DefaultModels is the fallback catalog used when an account has no
 	// discovered models. It must not be presented as live upstream state.
 	DefaultModels() []string
+	// ModelCatalog is the same set as DefaultModels carrying its metadata, so
+	// the dashboard can show real capability flags instead of inferring them
+	// from the model name.
+	ModelCatalog() []pool.ModelMetadata
 	// FetchModels discovers the live model catalog for an account. Providers
 	// with no discovery endpoint should return their static catalog.
 	FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error)
@@ -49,6 +56,10 @@ type Upstream interface {
 	// Unwrap strips any provider envelope from the response body. Adapters
 	// whose format is FormatOpenAI return src unchanged.
 	Unwrap(src io.Reader) (io.Reader, error)
+	// Checkin performs the provider's daily check-in for one account. A
+	// provider with no check-in concept returns a CheckinUnsupported result
+	// rather than an error, so a batch run reports it plainly.
+	Checkin(ctx context.Context, acc *pool.Account) (pool.CheckinResult, error)
 }
 
 // Registry maps provider IDs to their adapters.
@@ -101,19 +112,94 @@ func (r *Registry) IDs() []string {
 
 // Resolve maps a public model name to a provider and the upstream model name.
 //
-// Resolution order: an explicit "<provider>/<model>" prefix, then the
-// configured regex rules in order, then the configured default provider.
+// The lookup chain, highest priority first:
+//
+//  1. an explicit "<provider>/<model>" prefix on the request
+//  2. an entry in routing.model_mapping, the operator's alias table
+//  3. the configured regex rules, in order
+//  4. the configured default provider
+//
+// A mapping value of "<provider>/<model>" pins both; a bare name overrides only
+// the upstream model and lets the rules choose the provider.
 func (s *Server) ResolveProvider(model string) (provider string, upstreamModel string) {
 	lower := strings.ToLower(model)
 
+	// 1. An explicit prefix always wins: the caller is being specific.
 	if idx := strings.Index(lower, "/"); idx > 0 {
 		if _, ok := s.upstreams.GetByName(lower[:idx]); ok {
 			return lower[:idx], model[idx+1:]
 		}
 	}
 
-	for _, rule := range s.cfg.Routing.ModelRules {
-		matched, _ := regexp.MatchString(rule.Pattern, lower)
+	// 2. The operator's alias table.
+	if mapped, ok := s.lookupAlias(lower); ok {
+		target := mapped.model
+		switch {
+		case mapped.provider != "":
+			return mapped.provider, target
+		default:
+			// Only the model was overridden; the rules pick the provider, using
+			// the alias target so a rule matching the upstream name still works.
+			if p, resolved := s.resolveByRules(target); p != "" {
+				return p, resolved
+			}
+			fallback := s.defaultProvider()
+			return fallback, target
+		}
+	}
+
+	// 3. Rules, then 4. the default provider.
+	if p, resolved := s.resolveByRules(model); p != "" {
+		return p, resolved
+	}
+	return s.defaultProvider(), model
+}
+
+// aliasTarget is a resolved routing.model_mapping entry.
+type aliasTarget struct {
+	provider string
+	model    string
+}
+
+// lookupAlias consults the alias table, matching the requested name
+// case-insensitively. Keys are normalized at lookup time so an operator does
+// not have to remember which case a model name uses.
+func (s *Server) lookupAlias(lower string) (aliasTarget, bool) {
+	mapping := s.routing()
+	if len(mapping.ModelMapping) == 0 {
+		return aliasTarget{}, false
+	}
+
+	raw, ok := mapping.ModelMapping[lower]
+	if !ok {
+		return aliasTarget{}, false
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return aliasTarget{}, false
+	}
+
+	// "<provider>/<model>" pins the provider too.
+	if idx := strings.Index(value, "/"); idx > 0 {
+		if _, known := s.upstreams.GetByName(strings.ToLower(value[:idx])); known {
+			return aliasTarget{
+				provider: strings.ToLower(value[:idx]),
+				model:    value[idx+1:],
+			}, true
+		}
+	}
+	return aliasTarget{model: value}, true
+}
+
+// resolveByRules applies the configured regex rules in order. It returns an
+// empty provider when nothing matched.
+func (s *Server) resolveByRules(model string) (string, string) {
+	lower := strings.ToLower(model)
+	for _, rule := range s.routing().ModelRules {
+		matched, err := regexp.MatchString(rule.Pattern, lower)
+		if err != nil {
+			continue
+		}
 		if matched {
 			target := model
 			if rule.UpstreamModel != "" {
@@ -122,18 +208,36 @@ func (s *Server) ResolveProvider(model string) (provider string, upstreamModel s
 			return strings.ToLower(rule.Provider), target
 		}
 	}
+	return "", ""
+}
 
-	fallback := strings.ToLower(s.cfg.Routing.DefaultProvider)
+// defaultProvider returns the configured default, falling back to the first
+// registered provider so an unset or stale value still routes somewhere.
+func (s *Server) defaultProvider() string {
+	fallback := strings.ToLower(s.routing().DefaultProvider)
 	if _, ok := s.upstreams.GetByName(fallback); !ok {
 		if ids := s.upstreams.IDs(); len(ids) > 0 {
 			fallback = ids[0]
 		}
 	}
-	return fallback, model
+	return fallback
+}
+
+// routing reads the routing config under the reload lock, since the config can
+// be swapped while requests are in flight.
+func (s *Server) routing() config.RoutingConfig {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.Routing
 }
 
 // callUpstream selects an account for the provider and calls it, failing over
 // across accounts. The returned response body is owned by the caller.
+//
+// Selection is delegated to the pool's dispatcher, which applies the health
+// filter, model capability matching and the value-weighted choice. Each failed
+// attempt parks the account it used, so the next attempt is a genuinely
+// different account rather than a retry of the same one.
 func (s *Server) callUpstream(ctx context.Context, provider string, req *openai.ChatCompletionRequest, rawBody []byte) (*http.Response, Upstream, error) {
 	up, ok := s.upstreams.GetByName(provider)
 	if !ok {
@@ -142,19 +246,44 @@ func (s *Server) callUpstream(ctx context.Context, provider string, req *openai.
 
 	const maxAttempts = 3
 	var lastErr error
+	var lastAcc *pool.Account
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		acc := s.pool.Pick(up.ID())
+		acc := s.pool.PickFor(pool.DispatchOptions{
+			Provider: up.ID(),
+			Model:    req.Model,
+			// A conversation sticks to one account so multi-turn requests are
+			// not spread across accounts, which would both hurt continuity and
+			// look like unrelated accounts sending similar contexts.
+			AffinityKey: sessionKey(req),
+		})
 		if acc == nil {
 			if lastErr != nil {
 				return nil, up, lastErr
 			}
 			return nil, up, fmt.Errorf("no available %s accounts in pool", up.Label())
 		}
+		// Retrying the account that just failed would be a wasted attempt.
+		if lastAcc != nil && acc.ID == lastAcc.ID {
+			acc = s.pool.PickFor(pool.DispatchOptions{Provider: up.ID(), Model: req.Model})
+			if acc == nil || acc.ID == lastAcc.ID {
+				break
+			}
+		}
 
+		acc.RecordDispatch()
 		resp, err := up.Chat(ctx, acc, req, rawBody)
+		acc.ReleaseDispatch()
+
+		// Attribution covers the failing case too: an operator diagnosing a
+		// failure needs the account that failed, and `all accounts failed`
+		// alone does not say which ones were tried.
+		if info := requestInfoFrom(ctx); info != nil {
+			info.Account = acc.Name
+		}
+
 		if err != nil {
-			lastErr = err
+			lastErr, lastAcc = err, acc
 			log.Printf("[%s] 账号 %s 失败: %v, 故障转移重试 (%d/%d)", up.Label(), acc.Name, err, attempt+1, maxAttempts)
 			continue
 		}
@@ -162,6 +291,27 @@ func (s *Server) callUpstream(ctx context.Context, provider string, req *openai.
 	}
 
 	return nil, up, fmt.Errorf("all %s accounts failed: %w", up.Label(), lastErr)
+}
+
+// sessionKey derives a stable per-conversation key for affinity.
+//
+// The first user message is used because it is stable across the turns of one
+// conversation and differs between conversations. A request with no messages
+// gets no affinity, which is correct: there is nothing to stay consistent with.
+func sessionKey(req *openai.ChatCompletionRequest) string {
+	if req == nil || len(req.Messages) == 0 {
+		return ""
+	}
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		if text, ok := m.Content.(string); ok && text != "" {
+			sum := sha256.Sum256([]byte(text))
+			return hex.EncodeToString(sum[:16])
+		}
+	}
+	return ""
 }
 
 // forwardToOpenAI relays an upstream response to the client in OpenAI dialect.

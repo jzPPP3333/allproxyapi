@@ -1,0 +1,24 @@
+services:
+  allproxyapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: allproxyapi:latest
+    container_name: allproxyapi
+    restart: unless-stopped
+    # Bound to the host loopback only. The gateway authenticates its own clients
+    # with a shared API key, but exposing an LLM proxy to the network by default
+    # is not a safe default; publish 0.0.0.0 deliberately if you need to.
+    ports:
+      - "127.0.0.1:8320:8320"
+    volumes:
+      # Config and credentials, including refreshed tokens written back on
+      # rotation, live on the host so they survive a container rebuild.
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      # Optional egress proxy. Leave unset to reach upstreams directly.
+      # - HTTPS_PROXY=http://host.docker.internal:10808
+    extra_hosts:
+      # Lets a proxy running on the Docker host be addressed by name.
+      - "host.docker.internal:host-gateway"

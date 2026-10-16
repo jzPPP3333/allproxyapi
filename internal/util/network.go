@@ -61,6 +61,19 @@ func DetectProxyURL(configured string) string {
 	return ""
 }
 
+// isLoopbackHost reports whether a host resolves to the local machine by name.
+// It does not perform DNS resolution, so a name that happens to point at
+// loopback still uses the proxy.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // NewHTTPClient creates an HTTP client with proxy and optional HTTP/1.1 enforcement.
 func NewHTTPClient(proxyStr string, forceHTTP1 bool, timeout time.Duration) *http.Client {
 	if timeout <= 0 {
@@ -80,7 +93,16 @@ func NewHTTPClient(proxyStr string, forceHTTP1 bool, timeout time.Duration) *htt
 
 	if proxyStr != "" {
 		if parsed, err := url.Parse(proxyStr); err == nil {
-			transport.Proxy = http.ProxyURL(parsed)
+			proxyFn := http.ProxyURL(parsed)
+			// The egress proxy exists to reach public upstreams. Sending a
+			// loopback request through it is never correct, and it breaks any
+			// local upstream override.
+			transport.Proxy = func(req *http.Request) (*url.URL, error) {
+				if isLoopbackHost(req.URL.Hostname()) {
+					return nil, nil
+				}
+				return proxyFn(req)
+			}
 		}
 	} else {
 		transport.Proxy = http.ProxyFromEnvironment
