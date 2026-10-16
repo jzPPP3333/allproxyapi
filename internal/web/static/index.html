@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AllProxyAPI 控制中心</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f2937;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #3b82f6;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --indigo: #6366f1;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(17, 24, 39, 0.85);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--card-border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      font-size: 1.15rem;
+      letter-spacing: -0.02em;
+    }
+    .badge {
+      font-size: 0.75rem;
+      padding: 0.15rem 0.55rem;
+      border-radius: 9999px;
+      font-weight: 600;
+      border: 1px solid;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .badge-green { background: rgba(16, 185, 129, 0.15); color: var(--success); border-color: rgba(16, 185, 129, 0.3); }
+    .badge-blue { background: rgba(59, 130, 246, 0.15); color: var(--accent); border-color: rgba(59, 130, 246, 0.3); }
+    .badge-indigo { background: rgba(99, 102, 241, 0.15); color: #818cf8; border-color: rgba(99, 102, 241, 0.3); }
+    .badge-amber { background: rgba(245, 158, 11, 0.15); color: var(--warning); border-color: rgba(245, 158, 11, 0.3); }
+    .badge-gray { background: rgba(156, 163, 175, 0.15); color: var(--text-muted); border-color: rgba(156, 163, 175, 0.3); }
+
+    .btn {
+      background: #1f2937;
+      color: var(--text);
+      border: 1px solid #374151;
+      padding: 0.45rem 0.9rem;
+      border-radius: 0.375rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .btn:hover { background: #374151; border-color: #4b5563; }
+    .btn-primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-success { background: #059669; border-color: #10b981; color: #fff; }
+    .btn-success:hover { background: #047857; }
+    .btn-sm { padding: 0.25rem 0.6rem; font-size: 0.75rem; }
+
+    main {
+      flex: 1;
+      max-width: 1320px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .grid { display: grid; gap: 1rem; }
+    .grid-4 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 0.75rem;
+      padding: 1.25rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+    .stat-title { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; }
+    .stat-value { font-size: 1.85rem; font-weight: 700; margin-top: 0.35rem; }
+    .stat-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+    pre {
+      background: #030712;
+      border: 1px solid #1f2937;
+      padding: 0.75rem;
+      border-radius: 0.5rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.75rem;
+      color: #e5e7eb;
+      overflow-x: auto;
+      margin: 0.5rem 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      text-align: left;
+    }
+    th {
+      background: #030712;
+      color: var(--text-muted);
+      padding: 0.65rem 0.85rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--card-border);
+    }
+    td {
+      padding: 0.75rem 0.85rem;
+      border-bottom: 1px solid rgba(31, 41, 55, 0.6);
+    }
+    tr:hover td { background: rgba(31, 41, 55, 0.3); }
+
+    /* Model Cards Grid */
+    .models-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 0.75rem;
+    }
+    .model-card {
+      background: #0d1322;
+      border: 1px solid var(--card-border);
+      border-radius: 0.5rem;
+      padding: 0.85rem 1rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.15s ease-in-out;
+      cursor: pointer;
+    }
+    .model-card:hover {
+      border-color: #3b82f6;
+      background: #111827;
+      transform: translateY(-1px);
+    }
+    .model-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+    .model-card-id {
+      font-family: ui-monospace, monospace;
+      font-weight: 700;
+      font-size: 0.85rem;
+      color: #93c5fd;
+    }
+    .model-card-name {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.2rem;
+    }
+    .model-card-desc {
+      font-size: 0.75rem;
+      color: #d1d5db;
+      margin-top: 0.4rem;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      line-height: 1.35;
+    }
+    .model-card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.75rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid rgba(31, 41, 55, 0.6);
+      font-size: 0.7rem;
+    }
+    .model-features {
+      display: flex;
+      gap: 0.25rem;
+    }
+    .model-feat {
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      padding: 0.1rem 0.35rem;
+      border-radius: 0.25rem;
+      font-size: 0.68rem;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      z-index: 200;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-box {
+      background: #111827;
+      border: 1px solid var(--card-border);
+      border-radius: 0.75rem;
+      width: 100%;
+      max-width: 600px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .modal-title { font-size: 1.1rem; font-weight: 700; color: #fff; }
+    textarea, select, input {
+      width: 100%;
+      background: #030712;
+      border: 1px solid #374151;
+      border-radius: 0.375rem;
+      color: #f3f4f6;
+      padding: 0.6rem;
+      font-family: inherit;
+      font-size: 0.8rem;
+    }
+    textarea:focus, select:focus, input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    footer {
+      border-top: 1px solid var(--card-border);
+      padding: 1rem;
+      text-align: center;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div style="width: 2rem; height: 2rem; border-radius: 0.5rem; background: linear-gradient(135deg, #2563eb, #4f46e5); display: flex; align-items: center; justify-content: center; color: white; font-weight: 800;">DP</div>
+      <span>AllProxyAPI 控制中心</span>
+      <span class="badge badge-green">● 运行中 (8320)</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <button class="btn btn-primary btn-sm" onclick="openImportModal()">➕ 导入 API 凭据</button>
+      <button class="btn btn-sm" onclick="syncAllModels()">🔄 全量获取模型</button>
+      <button class="btn btn-sm" onclick="refreshData()">刷新</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Stats Row -->
+    <div class="grid grid-4">
+      <div class="card">
+        <div class="stat-title">已载入账号</div>
+        <div class="stat-value" id="stat-total">0</div>
+        <div class="stat-desc">多上游混合连接池调度</div>
+      </div>
+      <div class="card">
+        <div class="stat-title">WorkBuddy (腾讯云)</div>
+        <div class="stat-value" id="stat-wb" style="color: #818cf8;">0</div>
+        <div class="stat-desc" id="stat-wb-desc">已同步 0 个原生模型</div>
+      </div>
+      <div class="card">
+        <div class="stat-title">Google Antigravity</div>
+        <div class="stat-value" id="stat-ag" style="color: #60a5fa;">0</div>
+        <div class="stat-desc" id="stat-ag-desc">已同步 0 个云端模型</div>
+      </div>
+      <div class="card">
+        <div class="stat-title">可用模型总数</div>
+        <div class="stat-value" id="stat-models" style="color: var(--success);">0</div>
+        <div class="stat-desc">支持智能降级与实时搜索</div>
+      </div>
+    </div>
+
+    <!-- Accounts Table -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+        <div>
+          <h2 style="font-size: 1rem; font-weight: 700;">已接入账号清单</h2>
+          <p style="font-size: 0.75rem; color: var(--text-muted);">自动发现与热加载 server/data/oauth 凭证；点击“获取模型”可实时探测上游 API 支持的所有模型</p>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="openImportModal()">➕ 导入新账号</button>
+      </div>
+      <div style="overflow-x: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>账号标识 / 备注</th>
+              <th>所属通道</th>
+              <th>大区 / 项目</th>
+              <th>Token 摘要</th>
+              <th>模型资产</th>
+              <th>状态</th>
+              <th>到期时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-tbody">
+            <tr>
+              <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">正在读取账号状态...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Models Grid with Filter -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+        <div>
+          <h2 style="font-size: 1rem; font-weight: 700;">上游聚合模型清单 (/v1/models)</h2>
+          <p style="font-size: 0.75rem; color: var(--text-muted);">直接由各 API 上游实时拉取发现；点击卡片可一键复制模型 ID</p>
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <input type="text" id="model-search" placeholder="🔍 搜索模型名称或特性..." oninput="filterModels()" style="max-width: 220px; font-size: 0.75rem; padding: 0.35rem 0.6rem;">
+          <select id="model-filter" onchange="filterModels()" style="max-width: 140px; font-size: 0.75rem; padding: 0.35rem;">
+            <option value="all">全部通道</option>
+            <option value="workbuddy">Tencent WorkBuddy</option>
+            <option value="antigravity">Google Antigravity</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="models-grid" id="models-container">
+        <div style="color: var(--text-muted); font-size: 0.75rem; padding: 1rem;">正在加载模型列表...</div>
+      </div>
+    </div>
+
+    <!-- Client Config Guides -->
+    <div class="grid grid-2">
+      <!-- DeepSeek Harness Setup -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="font-size: 0.9rem; font-weight: 600; color: #a5b4fc;">1. DeepSeek Harness 接入</h3>
+          <button class="btn btn-sm" onclick="copyText('http://localhost:8320/v1')">复制 Base URL</button>
+        </div>
+        <pre>Base URL : http://localhost:8320/v1
+API Key  : sk-desktopproxy
+Model    : deepseek-v4.1-flash (或 step-5-preview, kimi-k3-1)</pre>
+        <p style="font-size: 0.75rem; color: var(--text-muted);">原生直通 WorkBuddy 官方 30+ 顶尖模型通道，原生支持实时网络搜索。</p>
+      </div>
+
+      <!-- Codex Desktop Setup -->
+      <div class="card">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="font-size: 0.9rem; font-weight: 600; color: #6ee7b7;">2. Codex Desktop 接入</h3>
+          <button class="btn btn-sm" onclick="copyText('http://localhost:8320/v1')">复制 Base URL</button>
+        </div>
+        <pre>Base URL : http://localhost:8320/v1
+API Key  : sk-desktopproxy
+Model    : gpt-4o (或 claude-3-7-sonnet)</pre>
+        <p style="font-size: 0.75rem; color: var(--text-muted);">同时兼容 `/v1/chat/completions` 与 `/v1/responses`，原生兼容 Codex 流式。</p>
+      </div>
+
+      <!-- Claude Desktop Setup -->
+      <div class="card" style="grid-column: 1 / -1;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="font-size: 0.9rem; font-weight: 600; color: #fde047;">3. Claude Desktop / Claude Code CLI 接入</h3>
+          <button class="btn btn-sm" onclick="copySnippet('claude-cmd')">复制终端命令</button>
+        </div>
+        <pre id="claude-cmd">$env:ANTHROPIC_BASE_URL = "http://localhost:8320"
+$env:ANTHROPIC_API_KEY = "sk-desktopproxy"
+claude</pre>
+        <p style="font-size: 0.75rem; color: var(--text-muted);">使用 `/v1/messages` 原生协议，完整支持 Tool Calls，自动清洗 `const` 解决 400 校验错误。</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Import Modal -->
+  <div class="modal-overlay" id="import-modal">
+    <div class="modal-box">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="modal-title">导入 API 凭据并自动获取模型</div>
+        <button onclick="closeImportModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.25rem;">&times;</button>
+      </div>
+      <p style="font-size: 0.75rem; color: var(--text-muted);">
+        支持粘贴 WorkBuddy / Antigravity 的 JSON 凭证，导入后网关将自动向该 API 发起连接并同步可用的完整模型列表。
+      </p>
+
+      <div>
+        <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">凭证类型</label>
+        <select id="import-type">
+          <option value="workbuddy">Tencent WorkBuddy (国内版/国际版)</option>
+          <option value="antigravity">Google Antigravity (Cloud Code PA)</option>
+        </select>
+      </div>
+
+      <div>
+        <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">凭据 JSON 内容</label>
+        <textarea id="import-json" rows="8" placeholder='{"type": "workbuddy", "accessToken": "eyJ...", "refreshToken": "..."}'></textarea>
+      </div>
+
+      <div id="import-result" style="display: none; padding: 0.75rem; border-radius: 0.375rem; font-size: 0.75rem;"></div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem;">
+        <button class="btn" onclick="closeImportModal()">取消</button>
+        <button class="btn btn-primary" id="btn-do-import" onclick="doImport()">验证并获取模型</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    AllProxyAPI Gateway &bull; 三上游本地反代网关 (WorkBuddy / Antigravity / Qoder) &bull; Go
+  </footer>
+
+  <script>
+    let ALL_MODELS = [];
+
+    async function refreshData() {
+      try {
+        const [statusRes, accountsRes, modelsRes] = await Promise.all([
+          fetch('/api/status').then(r => r.json()).catch(() => null),
+          fetch('/api/accounts').then(r => r.json()).catch(() => []),
+          fetch('/api/models').then(r => r.json()).catch(() => [])
+        ]);
+
+        // 1. Stats
+        if (statusRes && statusRes.pool) {
+          const total = statusRes.pool.total_accounts || 0;
+          const byType = statusRes.pool.by_type || {};
+          const ag = byType.antigravity || {};
+          const wb = byType.workbuddy || {};
+
+          document.getElementById('stat-total').innerText = total;
+          document.getElementById('stat-wb').innerText = (wb.healthy || 0) + ' / ' + (wb.total || 0);
+          document.getElementById('stat-ag').innerText = (ag.healthy || 0) + ' / ' + (ag.total || 0);
+        }
+
+        // 2. Accounts Table
+        const tbody = document.getElementById('accounts-tbody');
+        if (!accountsRes || accountsRes.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">当前无可用账号。请将 JSON 凭证文件放置于 server/data/oauth 目录或点击右上角导入</td></tr>';
+        } else {
+          let wbModelsCount = 0;
+          let agModelsCount = 0;
+
+          tbody.innerHTML = accountsRes.map(acc => {
+            const isAg = acc.type === 'antigravity';
+            const badgeClass = isAg ? 'badge-blue' : 'badge-indigo';
+            const channelName = isAg ? 'Google Antigravity' : 'Tencent WorkBuddy';
+            const sub = isAg ? (acc.project_id || 'aicode-consumers') : (acc.realm === 'cn' ? '国内版' : '国际版');
+
+            if (isAg) agModelsCount += (acc.model_count || 0);
+            else wbModelsCount += (acc.model_count || 0);
+
+            let statusBadge = '<span class="badge badge-green">● 就绪</span>';
+            if (acc.status === 'cooldown') {
+              statusBadge = '<span class="badge badge-amber">● 冷却中</span>';
+            } else if (acc.status === 'expired') {
+              statusBadge = '<span class="badge badge-gray">● 已过期</span>';
+            }
+
+            const modelBadge = acc.model_count > 0
+              ? `<span class="badge badge-green" style="cursor:pointer;" onclick="filterAccountModels('${acc.id}')">${acc.model_count} 个模型</span>`
+              : `<span class="badge badge-gray">未获取</span>`;
+
+            return `
+              <tr>
+                <td style="font-weight: 600;">${escapeHtml(acc.name || acc.id)}</td>
+                <td><span class="badge ${badgeClass}">${channelName}</span></td>
+                <td style="color: var(--text-muted); font-size: 0.8rem;">${escapeHtml(sub)}</td>
+                <td style="font-family: monospace; font-size: 0.75rem; color: #94a3b8;">${escapeHtml(acc.token_mask || '已配置')}</td>
+                <td>${modelBadge}</td>
+                <td>${statusBadge}</td>
+                <td style="color: var(--text-muted); font-size: 0.75rem;">${escapeHtml(acc.expires_at || '未知')}</td>
+                <td>
+                  <div style="display: flex; gap: 0.35rem;">
+                    <button class="btn btn-sm btn-primary" onclick="syncAccountModels('${acc.id}')">🔄 获取模型</button>
+                    <button class="btn btn-sm" onclick="resetCooldown('${acc.id}')">重置</button>
+                  </div>
+                </td>
+              </tr>
+            `;
+          }).join('');
+
+          if (wbModelsCount > 0) document.getElementById('stat-wb-desc').innerText = `已同步 ${wbModelsCount} 个原生模型`;
+          if (agModelsCount > 0) document.getElementById('stat-ag-desc').innerText = `已同步 ${agModelsCount} 个云端模型`;
+        }
+
+        // 3. Models
+        ALL_MODELS = modelsRes || [];
+        document.getElementById('stat-models').innerText = ALL_MODELS.length;
+        renderModels(ALL_MODELS);
+
+      } catch (err) {
+        console.error("Dashboard refresh error:", err);
+      }
+    }
+
+    function renderModels(list) {
+      const mContainer = document.getElementById('models-container');
+      if (!list || list.length === 0) {
+        mContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem; padding: 1rem;">暂无匹配模型</div>';
+        return;
+      }
+
+      mContainer.innerHTML = list.map(m => {
+        const isAg = m.provider === 'antigravity';
+        const badgeClass = isAg ? 'badge-blue' : 'badge-indigo';
+        const providerName = isAg ? 'Antigravity' : 'WorkBuddy';
+
+        let feats = '';
+        if (m.supports_reasoning) feats += '<span class="model-feat">🧠 深度思考</span>';
+        if (m.supports_tool_call) feats += '<span class="model-feat">🛠️ 函数调用</span>';
+        if (m.supports_images) feats += '<span class="model-feat">👁️ 视觉识图</span>';
+
+        let creditsTag = '';
+        if (m.credits) {
+          creditsTag = `<span style="color:#f59e0b; font-weight:600;">${escapeHtml(m.credits)}</span>`;
+        }
+
+        return `
+          <div class="model-card" onclick="copyText('${m.id}')" title="点击复制模型 ID: ${escapeHtml(m.id)}">
+            <div class="model-card-header">
+              <div>
+                <div class="model-card-id">${escapeHtml(m.id)}</div>
+                <div class="model-card-name">${escapeHtml(m.name || m.id)}</div>
+              </div>
+              <span class="badge ${badgeClass}" style="font-size:0.65rem;">${providerName}</span>
+            </div>
+            <div class="model-card-desc">${escapeHtml(m.description_zh || m.note || '高可用代码与综合推理模型')}</div>
+            <div class="model-card-footer">
+              <div class="model-features">${feats}</div>
+              <div>${creditsTag}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function filterModels() {
+      const q = (document.getElementById('model-search').value || '').toLowerCase().trim();
+      const prov = document.getElementById('model-filter').value;
+
+      const filtered = ALL_MODELS.filter(m => {
+        if (prov !== 'all' && m.provider !== prov) return false;
+        if (!q) return true;
+        return (m.id || '').toLowerCase().includes(q) ||
+               (m.name || '').toLowerCase().includes(q) ||
+               (m.description_zh || '').toLowerCase().includes(q);
+      });
+      renderModels(filtered);
+    }
+
+    async function syncAccountModels(id) {
+      const btn = event.target;
+      const originText = btn.innerText;
+      btn.innerText = '同步中...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/accounts/sync-models?id=' + encodeURIComponent(id), { method: 'POST' }).then(r => r.json());
+        if (res.results && res.results.length > 0) {
+          const r = res.results[0];
+          if (r.error) {
+            alert('拉取失败: ' + r.error);
+          } else {
+            alert(`🎉 成功从上游 API 获取到 ${r.count} 个可用模型！`);
+          }
+        }
+      } catch (e) {
+        alert('网络请求失败: ' + e);
+      } finally {
+        btn.innerText = originText;
+        btn.disabled = false;
+        refreshData();
+      }
+    }
+
+    async function syncAllModels() {
+      try {
+        const res = await fetch('/api/accounts/sync-models', { method: 'POST' }).then(r => r.json());
+        let total = 0;
+        (res.results || []).forEach(r => total += (r.count || 0));
+        alert(`🎉 同步完成！共拉取并解析到 ${total} 个可用模型。`);
+      } catch (e) {
+        alert('同步失败: ' + e);
+      } finally {
+        refreshData();
+      }
+    }
+
+    async function resetCooldown(id) {
+      await fetch('/api/accounts/cooldown/reset?id=' + encodeURIComponent(id));
+      refreshData();
+    }
+
+    function openImportModal() {
+      document.getElementById('import-result').style.display = 'none';
+      document.getElementById('import-modal').classList.add('active');
+    }
+
+    function closeImportModal() {
+      document.getElementById('import-modal').classList.remove('active');
+    }
+
+    async function doImport() {
+      const btn = document.getElementById('btn-do-import');
+      const resBox = document.getElementById('import-result');
+      const jsonStr = document.getElementById('import-json').value.trim();
+
+      if (!jsonStr) {
+        alert('请输入凭证内容！');
+        return;
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch (e) {
+        alert('JSON 格式错误，请检查！');
+        return;
+      }
+
+      const typeSelect = document.getElementById('import-type').value;
+      if (!parsed.type) {
+        parsed.type = typeSelect;
+      }
+
+      btn.disabled = true;
+      btn.innerText = '正在导入并获取模型...';
+      resBox.style.display = 'none';
+
+      try {
+        const resp = await fetch('/api/accounts/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(parsed)
+        }).then(r => r.json());
+
+        resBox.style.display = 'block';
+        if (resp.status === 'ok') {
+          resBox.style.background = 'rgba(16, 185, 129, 0.15)';
+          resBox.style.color = '#34d399';
+          resBox.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+          resBox.innerHTML = `✅ 导入成功！已加入连接池，并从上游 API 成功获取到 <b>${resp.models_count || 0}</b> 个可用模型！`;
+          setTimeout(() => {
+            closeImportModal();
+            refreshData();
+          }, 1500);
+        } else {
+          resBox.style.background = 'rgba(239, 68, 68, 0.15)';
+          resBox.style.color = '#f87171';
+          resBox.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+          resBox.innerText = '❌ 导入失败: ' + (resp.error || '未知错误');
+        }
+      } catch (err) {
+        resBox.style.display = 'block';
+        resBox.style.background = 'rgba(239, 68, 68, 0.15)';
+        resBox.style.color = '#f87171';
+        resBox.innerText = '❌ 网络请求异常: ' + err;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '验证并获取模型';
+      }
+    }
+
+    function copySnippet(id) {
+      const text = document.getElementById(id).innerText;
+      copyText(text);
+    }
+
+    function copyText(text) {
+      navigator.clipboard.writeText(text);
+      alert('已复制到剪贴板: ' + text);
+    }
+
+    function escapeHtml(s) {
+      return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    refreshData();
+    setInterval(refreshData, 10000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+# Local configuration and credentials — never commit these.
+data/config.yaml
+data/oauth/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Build output
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace
+vendor/
+.idea/
+.vscode/
+*.swp
+
+# Local scratch
+_smoke/
+_tmp/
+*.log

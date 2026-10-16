@@ -1,0 +1,88 @@
+# AllProxyAPI configuration.
+# Copy to data/config.yaml and edit. Everything here is loaded once at startup.
+
+server:
+  host: "127.0.0.1"
+  port: 8320
+  # Any non-empty value is enforced as the client API key. If you change this
+  # from the default, requests must present it as "Authorization: Bearer <key>"
+  # or "x-api-key: <key>".
+  api_key: "sk-allproxyapi"
+  # Optional egress proxy for providers that do not set their own. Leave empty
+  # to fall back to HTTPS_PROXY / HTTP_PROXY or the Windows system proxy.
+  proxy: ""
+
+providers:
+  # Google Antigravity (Cloud Code PA). Requests are translated to the Gemini
+  # schema and wrapped in the Cloud Code PA envelope.
+  antigravity:
+    base_url: "https://daily-cloudcode-pa.googleapis.com"
+    default_project: "aicode-consumers"
+    # Required for OAuth token refresh. These are the OAuth client credentials
+    # of your own Antigravity installation, copied from the client you already
+    # run — they are intentionally not shipped in this repo. Without them the
+    # channel works only until the access token expires.
+    client_id: ""
+    client_secret: ""
+    proxy: ""
+
+  # Tencent WorkBuddy / CodeBuddy. The upstream is OpenAI-compatible.
+  # default_realm: "cn" (copilot.tencent.com) or "intl" (www.workbuddy.ai)
+  workbuddy:
+    default_realm: "cn"
+    default_product: "workbuddy"
+
+  # Alibaba Qoder. The inference host exposes an OpenAI-compatible
+  # /model/v1/chat/completions route that needs no request signing.
+  # region: "intl" or "cn" selects the default host pair.
+  #   intl -> https://api2-v2.qoder.sh     (auth: https://openapi.qoder.sh)
+  #   cn   -> https://gateway.qoder.com.cn (auth: https://openapi.qoder.com.cn)
+  qoder:
+    region: "intl"
+    # Set base_url / auth_url only to override the region defaults.
+    base_url: ""
+    auth_url: ""
+    client_version: "1.1.49"
+    proxy: ""
+
+routing:
+  # Provider used when no model rule matches. Must be a registered provider id.
+  default_provider: "workbuddy"
+  # Rules are evaluated in order against the lowercased model name. The first
+  # match wins. An explicit "<provider>/<model>" prefix on the request always
+  # takes precedence over these rules.
+  model_rules:
+    - pattern: "^claude-.*"
+      provider: "antigravity"
+      upstream_model: "claude-sonnet-4-6"
+    - pattern: "^gemini-.*"
+      provider: "antigravity"
+      upstream_model: ""
+    - pattern: "^deepseek-.*"
+      provider: "workbuddy"
+      upstream_model: ""
+    - pattern: "^kimi-.*"
+      provider: "workbuddy"
+      upstream_model: ""
+    - pattern: "^hy.*"
+      provider: "workbuddy"
+      upstream_model: ""
+    - pattern: "^glm-.*"
+      provider: "workbuddy"
+      upstream_model: ""
+    - pattern: "^gpt-.*"
+      provider: "workbuddy"
+      upstream_model: ""
+    - pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel|ultimate|performance|efficient).*"
+      provider: "qoder"
+      upstream_model: ""
+
+storage:
+  # Directories scanned at startup for credential JSON. Each file is classified
+  # as antigravity, workbuddy or qoder by its type field, token prefix, or path.
+  oauth_dirs:
+    - "./data/oauth"
+    - "~/.cli-proxy-api"
+    - "%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth"
+    - "%APPDATA%/Qoder"
+    - "~/.qoder"

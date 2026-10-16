@@ -1,0 +1,216 @@
+package workbuddy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/jzPPP3333/allproxyapi/internal/pool"
+)
+
+type Client struct {
+	httpClient *http.Client
+}
+
+func NewClient() *Client {
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: 180 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+	}
+}
+
+// NormalizeModel maps standard names to WorkBuddy internal models
+func NormalizeModel(m string) string {
+	lower := strings.ToLower(strings.TrimSpace(m))
+	switch lower {
+	case "deepseek-chat", "deepseek":
+		return "deepseek-v4.1-flash"
+	case "deepseek-reasoner", "deepseek-r1":
+		return "deepseek-reasoner"
+	case "kimi":
+		return "kimi-k3-1"
+	default:
+		return m
+	}
+}
+
+// DoChat forwards a chat completion request to WorkBuddy upstream /v2/chat/completions.
+func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) (*http.Response, error) {
+	realm := "cn"
+	if acc.Realm != "" {
+		realm = acc.Realm
+	}
+	cfg := GetRealmConfig(realm)
+	endpoint := cfg.ChatUpstream + "/v2/chat/completions"
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+
+	headers := BuildIdentityHeaders(acc)
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("workbuddy request failed: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+		acc.SetCooldown(60*time.Second, "429 Too Many Requests")
+		return nil, fmt.Errorf("upstream rate limit (429)")
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		// Try token refresh
+		if refreshErr := RefreshToken(ctx, acc); refreshErr == nil {
+			// Retry once with new token
+			return c.DoChat(ctx, acc, reqBody)
+		}
+		acc.SetCooldown(300*time.Second, "401 Unauthorized")
+		return nil, fmt.Errorf("upstream unauthorized (401)")
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("workbuddy upstream error (%d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	return resp, nil
+}
+
+func (c *Client) GetDefaultModels() []string {
+	return []string{
+		"deepseek-v4.1-flash",
+		"deepseek-v3.1",
+		"deepseek-reasoner",
+		"kimi-k3-1",
+		"hy4-preview-f",
+		"hy3",
+		"glm-4-flash",
+		"gpt-4o",
+	}
+}
+
+type upstreamModelItem struct {
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	DescriptionZh     string `json:"descriptionZh"`
+	Credits           string `json:"credits"`
+	MaxInputTokens    int    `json:"maxInputTokens"`
+	MaxOutputTokens   int    `json:"maxOutputTokens"`
+	SupportsImages    bool   `json:"supportsImages"`
+	SupportsReasoning bool   `json:"supportsReasoning"`
+	SupportsToolCall  bool   `json:"supportsToolCall"`
+}
+
+type upstreamModelsResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		Models []upstreamModelItem `json:"models"`
+		Agents []struct {
+			Name   string   `json:"name"`
+			Models []string `json:"models"`
+		} `json:"agents"`
+	} `json:"data"`
+}
+
+// FetchModels queries the WorkBuddy upstream /v2/enterprises/personal/models to discover all available models.
+func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error) {
+	realm := "cn"
+	if acc.Realm != "" {
+		realm = acc.Realm
+	}
+	cfg := GetRealmConfig(realm)
+	endpoint := cfg.ChatUpstream + "/v2/enterprises/personal/models"
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	headers := BuildIdentityHeaders(acc)
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetch models request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read models body failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch models returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var parsed upstreamModelsResponse
+	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("unmarshal models error: %w", err)
+	}
+
+	seen := make(map[string]bool)
+	var result []pool.ModelMetadata
+
+	// 1. Primary models with rich metadata
+	for _, m := range parsed.Data.Models {
+		if m.ID == "" || seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
+		result = append(result, pool.ModelMetadata{
+			ID:                m.ID,
+			Name:              m.Name,
+			DescriptionZh:     m.DescriptionZh,
+			Credits:           m.Credits,
+			MaxInputTokens:    m.MaxInputTokens,
+			MaxOutputTokens:   m.MaxOutputTokens,
+			SupportsImages:    m.SupportsImages,
+			SupportsReasoning: m.SupportsReasoning,
+			SupportsToolCall:  m.SupportsToolCall,
+		})
+	}
+
+	// 2. Models from agents list (supplementary)
+	for _, ag := range parsed.Data.Agents {
+		for _, mid := range ag.Models {
+			if mid == "" || seen[mid] {
+				continue
+			}
+			seen[mid] = true
+			result = append(result, pool.ModelMetadata{
+				ID:                mid,
+				Name:              mid,
+				DescriptionZh:     fmt.Sprintf("Agent (%s) 模型", ag.Name),
+				SupportsToolCall:  true,
+				SupportsReasoning: true,
+			})
+		}
+	}
+
+	// Update account's cached models
+	acc.SetModels(result)
+	return result, nil
+}
