@@ -58,7 +58,7 @@ func main() {
 	accountPool := pool.NewAccountPool()
 
 	// 3. Initialize Egress Clients and register them as upstream adapters
-	wbClient := workbuddy.NewClient()
+	wbClient := workbuddy.NewClient(cfg.Providers.WorkBuddy.ExcludeModelPatterns)
 	agClient := antigravity.NewClient(&cfg.Providers.Antigravity)
 	qoderClient := qoder.NewClient(cfg.Providers.Qoder)
 

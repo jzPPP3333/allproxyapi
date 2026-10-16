@@ -147,6 +147,31 @@ curl http://127.0.0.1:8320/v1/messages \
 
 **人话别名仍然可用**：`claude-3-7-sonnet`、`deepseek-chat`、`kimi` 这类名字照常接受并被 provider 的映射表转换，只是不再作为独立模型出现在清单里 —— 两个名字指向同一个上游模型不该被算成两个模型。
 
+### 档位条目会被过滤掉
+
+WorkBuddy 的上游模型接口把**档位预设**和真实模型混在同一个 `data.models` 数组里返回：
+
+```
+default-model    Auto      优秀的编码模型，适合日常使用      x0.79
+fast-model       Fast      响应快，适合简单任务
+balanced-model   Balanced  速度与质量兼顾，日常工作首选      x0.59
+primary-model    Primary   高质量输出，胜任复杂任务          x3.31
+deepseek-v4.1-flash        ← 真实模型
+kimi-k3-1                  ← 真实模型
+```
+
+档位是**服务端路由别名**，不是一个可选模型，因此默认从清单里滤除。过滤规则是配置而非代码，上游改名时改 `providers.workbuddy.exclude_model_patterns` 即可，无需重新编译：
+
+```yaml
+providers:
+  workbuddy:
+    exclude_model_patterns:
+      - "(?i)^default-model$"
+      - "(?i)^fast-model$"
+```
+
+留空为 `[]` 则原样显示全部条目。匹配的是模型 id、忽略大小写、锚定首尾，所以 `deepseek-fast-model` 这类名字不会被误伤。被过滤的条目数以日志形式输出，不会静默丢弃。
+
 ---
 
 ## 凭据配置

@@ -37,6 +37,17 @@ providers:
     checkin_path: ""
     daily_checkin: false
     checkin_hour: 9
+    # The upstream model list mixes its tier presets (default-model,
+    # fast-model, ...) in with real models. Those are server-side routing
+    # aliases rather than selectable models, so they are filtered out here.
+    # Patterns are regexps matched against the model id, case-insensitively,
+    # and are config rather than code so an upstream rename needs no rebuild.
+    # Set to [] to show every entry as-is.
+    exclude_model_patterns:
+      - "(?i)^default-model$"
+      - "(?i)^fast-model$"
+      - "(?i)^balanced-model$"
+      - "(?i)^primary-model$"
 
   # Alibaba Qoder. The inference host exposes an OpenAI-compatible
   # /model/v1/chat/completions route that needs no request signing.

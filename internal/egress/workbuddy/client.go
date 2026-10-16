@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,11 +16,27 @@ import (
 )
 
 type Client struct {
-	httpClient *http.Client
+	httpClient   *http.Client
+	excludeModel []*regexp.Regexp
 }
 
-func NewClient() *Client {
+// NewClient builds a client. excludePatterns are regexps matched against an
+// upstream model id; a match drops that entry from the discovered list.
+func NewClient(excludePatterns []string) *Client {
+	var compiled []*regexp.Regexp
+	for _, p := range excludePatterns {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			log.Printf("[WorkBuddy] 忽略无效的 exclude_model_patterns 项 %q: %v", p, err)
+			continue
+		}
+		compiled = append(compiled, re)
+	}
 	return &Client{
+		excludeModel: compiled,
 		httpClient: &http.Client{
 			Timeout: 180 * time.Second,
 			Transport: &http.Transport{
@@ -28,6 +46,16 @@ func NewClient() *Client {
 			},
 		},
 	}
+}
+
+// excluded reports whether an upstream model id matches an exclusion pattern.
+func (c *Client) excluded(id string) bool {
+	for _, re := range c.excludeModel {
+		if re.MatchString(id) {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeModel maps a friendly alias onto a WorkBuddy upstream model name.
@@ -213,10 +241,18 @@ func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.Mod
 
 	seen := make(map[string]bool)
 	var result []pool.ModelMetadata
+	skipped := 0
 
 	// 1. Primary models with rich metadata
 	for _, m := range parsed.Data.Models {
 		if m.ID == "" || seen[m.ID] {
+			continue
+		}
+		// Tier presets such as default-model are server-side routing aliases,
+		// not selectable models, so they are dropped here rather than shown as
+		// if they were models.
+		if c.excluded(m.ID) {
+			skipped++
 			continue
 		}
 		seen[m.ID] = true
@@ -239,6 +275,10 @@ func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.Mod
 			if mid == "" || seen[mid] {
 				continue
 			}
+			if c.excluded(mid) {
+				skipped++
+				continue
+			}
 			seen[mid] = true
 			result = append(result, pool.ModelMetadata{
 				ID:                mid,
@@ -248,6 +288,10 @@ func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.Mod
 				SupportsReasoning: true,
 			})
 		}
+	}
+
+	if skipped > 0 {
+		log.Printf("[WorkBuddy] 已过滤 %d 个档位条目 (exclude_model_patterns)", skipped)
 	}
 
 	// Update account's cached models

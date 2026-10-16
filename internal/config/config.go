@@ -87,6 +87,23 @@ type WorkBuddyConfig struct {
 	DailyCheckin bool `yaml:"daily_checkin"`
 	// CheckinHour is the local hour (0-23) the scheduler runs at.
 	CheckinHour int `yaml:"checkin_hour"`
+	// ExcludeModelPatterns filters the upstream model list by regexp, matched
+	// against the model id. The upstream exposes tier entries such as
+	// "default-model" and "primary-model" alongside real models; those are
+	// server-side routing presets rather than selectable models, so they are
+	// excluded by default. Patterns are config, not code, so an upstream
+	// rename needs no rebuild.
+	ExcludeModelPatterns []string `yaml:"exclude_model_patterns"`
+}
+
+// DefaultExcludedModelPatterns drops the upstream's tier presets from the
+// model list. Each is a server-side alias that resolves to a real model, so
+// listing them alongside real models would misrepresent what is selectable.
+var DefaultExcludedModelPatterns = []string{
+	`(?i)^default-model$`,
+	`(?i)^fast-model$`,
+	`(?i)^balanced-model$`,
+	`(?i)^primary-model$`,
 }
 
 type RoutingConfig struct {
@@ -119,8 +136,9 @@ func DefaultConfig() *Config {
 				// OAuth client your Antigravity install uses in config.yaml.
 			},
 			WorkBuddy: WorkBuddyConfig{
-				DefaultRealm:   "cn",
-				DefaultProduct: "workbuddy",
+				DefaultRealm:         "cn",
+				DefaultProduct:       "workbuddy",
+				ExcludeModelPatterns: DefaultExcludedModelPatterns,
 			},
 			Qoder: QoderConfig{
 				Region:        "intl",

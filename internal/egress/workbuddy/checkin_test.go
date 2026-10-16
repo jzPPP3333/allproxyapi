@@ -8,7 +8,7 @@ import (
 )
 
 func TestCheckinUnsupportedWithoutPath(t *testing.T) {
-	c := NewClient()
+	c := NewClient(nil)
 	acc := &pool.Account{ID: "wb-1", Name: "wb"}
 
 	result, err := c.Checkin(context.Background(), acc, "")
@@ -123,7 +123,7 @@ func TestClientCheckinWithRealmAccount(t *testing.T) {
 	// A fully populated account must still report unsupported when no path is
 	// configured, rather than attempting a request against a guessed URL.
 	acc := &pool.Account{ID: "wb-1", Realm: "cn", UID: "u1", AccessToken: "tok"}
-	c := NewClient()
+	c := NewClient(nil)
 
 	result, err := c.Checkin(context.Background(), acc, "")
 	if err != nil {
