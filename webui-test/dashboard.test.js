@@ -37,7 +37,12 @@ function makeElement(id) {
     id,
     innerHTML: '',
     innerText: '',
-    value: id === 'model-filter' ? 'all' : '',
+    placeholder: '',
+    value: id === 'model-filter' ? 'all' : (id === 'import-type' ? 'workbuddy' : ''),
+    // Elements carry a style object so visibility toggling can be observed.
+    style: {},
+    classList: { add() {}, remove() {} },
+    appendChild() {},
     scrollIntoView() {},
   };
 }
@@ -64,12 +69,12 @@ const stubFetch = (url) => {
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
 };
 
-const runner = new Function('document', 'fetch', 'setInterval', 'setTimeout', appSource + `
+const runner = new Function('document', 'fetch', 'setInterval', 'setTimeout', 'alert', appSource + `
   return { providerMeta, accountSubtitle, renderProviderFilter, renderModels, filterModels,
-           accountStatusBadge, accountRecoveryNote,
+           accountStatusBadge, accountRecoveryNote, onImportTypeChange, doImport, openImportModal,
            setModels: (m) => { ALL_MODELS = m; }, getModels: () => ALL_MODELS };
 `);
-const api = runner(documentStub, stubFetch, noop, noop);
+const api = runner(documentStub, stubFetch, noop, noop, noop);
 
 // --- assertions -------------------------------------------------------------
 
@@ -206,8 +211,100 @@ check('a missing timestamp shows no countdown',
 check('a past timestamp shows no countdown',
   api.accountRecoveryNote({ status: 'cooling', recover_at: localStamp(-60000) }) === '');
 
-if (failures > 0) {
-  console.log(`\n${failures} check(s) failed`);
-  process.exit(1);
+console.log('import modal');
+
+// Qoder must be offered: its absence is what prompted this, and the backend
+// already supports it.
+const importTypeHtml = html.match(/<select id="import-type"[\s\S]*?<\/select>/);
+check('the import type selector exists', !!importTypeHtml);
+check('Qoder is offered as an import type',
+  !!importTypeHtml && importTypeHtml[0].includes('value="qoder"'),
+  importTypeHtml ? importTypeHtml[0] : 'selector not found');
+for (const [type, label] of [['workbuddy', 'WorkBuddy'], ['antigravity', 'Antigravity'], ['qoder', 'Qoder']]) {
+  check(`the import selector offers ${label}`,
+    !!importTypeHtml && importTypeHtml[0].includes(`value="${type}"`));
 }
-console.log('\nAll dashboard checks passed');
+
+// The realm row is only meaningful for Qoder, and must be hidden otherwise.
+const realmRow = documentStub.getElementById('import-realm-row');
+documentStub.getElementById('import-type').value = 'workbuddy';
+api.onImportTypeChange();
+check('the realm row is hidden for WorkBuddy', realmRow.style.display === 'none');
+
+documentStub.getElementById('import-type').value = 'antigravity';
+api.onImportTypeChange();
+check('the realm row is hidden for Antigravity', realmRow.style.display === 'none');
+
+documentStub.getElementById('import-type').value = 'qoder';
+api.onImportTypeChange();
+check('the realm row is shown for Qoder', realmRow.style.display === 'block');
+
+// The placeholder and hint must follow the selected provider, or an operator
+// pastes the wrong shape.
+const ta = documentStub.getElementById('import-json');
+const hint = documentStub.getElementById('import-hint');
+check('the placeholder mentions pt- for Qoder', ta.placeholder.includes('pt-'), ta.placeholder);
+check('the hint explains the pt- exchange',
+  hint.innerText.includes('pt-') && hint.innerText.includes('jt-'), hint.innerText);
+
+documentStub.getElementById('import-type').value = 'antigravity';
+api.onImportTypeChange();
+check('the placeholder switches for Antigravity', ta.placeholder.includes('ya29'), ta.placeholder);
+check('the hint warns about the OAuth client credentials',
+  hint.innerText.includes('client_id'), hint.innerText);
+
+console.log('import submits the selected realm');
+
+// A Qoder credential without a realm must pick up the selector's value,
+// otherwise it silently targets the wrong host.
+let submitted = null;
+const capturingFetch = (url, opts) => {
+  if (url === '/api/accounts/import' && opts && opts.body) {
+    submitted = JSON.parse(opts.body);
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'ok', models_count: 3, realm: 'cn' }) });
+  }
+  // Other endpoints keep their expected shapes so a stray refresh does not
+  // throw and muddy the output.
+  let body = null;
+  if (url.startsWith('/api/metrics')) body = { summary: {}, requests: [] };
+  else if (url === '/api/accounts' || url === '/api/models') body = [];
+  return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+};
+
+async function runImportChecks() {
+  const importApi = new Function('document', 'fetch', 'setInterval', 'setTimeout', 'alert', appSource + `
+    return { doImport, onImportTypeChange };
+  `)(documentStub, capturingFetch, noop, noop, noop);
+
+  documentStub.getElementById('import-type').value = 'qoder';
+  documentStub.getElementById('import-realm').value = 'cn';
+  documentStub.getElementById('import-json').value = '{"access_token":"pt-abc","account_name":"u@example.com"}';
+  importApi.onImportTypeChange();
+
+  await importApi.doImport();
+  await new Promise(r => setTimeout(r, 0));
+
+  check('the import was submitted', !!submitted);
+  if (submitted) {
+    check('type came from the selector', submitted.type === 'qoder', JSON.stringify(submitted));
+    check('realm came from the realm selector', submitted.realm === 'cn', JSON.stringify(submitted));
+    check('the token was preserved', submitted.access_token === 'pt-abc', JSON.stringify(submitted));
+  }
+
+  // An explicit realm in the pasted JSON wins over the selector.
+  submitted = null;
+  documentStub.getElementById('import-realm').value = 'cn';
+  documentStub.getElementById('import-json').value = '{"access_token":"pt-x","realm":"intl"}';
+  await importApi.doImport();
+  await new Promise(r => setTimeout(r, 0));
+  check('an explicit realm in the JSON is not overwritten',
+    submitted && submitted.realm === 'intl', JSON.stringify(submitted));
+}
+
+runImportChecks().then(() => {
+  if (failures > 0) {
+    console.log(`\n${failures} check(s) failed`);
+    process.exit(1);
+  }
+  console.log('\nAll dashboard checks passed');
+});

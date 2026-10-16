@@ -443,20 +443,32 @@ claude</pre>
         <button onclick="closeImportModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.25rem;">&times;</button>
       </div>
       <p style="font-size: 0.75rem; color: var(--text-muted);">
-        支持粘贴 WorkBuddy / Antigravity 的 JSON 凭证，导入后网关将自动向该 API 发起连接并同步可用的完整模型列表。
+        支持粘贴 WorkBuddy / Antigravity / Qoder 的 JSON 凭证，导入后网关将自动向该 API 发起连接并同步可用的完整模型列表。
       </p>
 
       <div>
         <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">凭证类型</label>
-        <select id="import-type">
+        <select id="import-type" onchange="onImportTypeChange()">
           <option value="workbuddy">Tencent WorkBuddy (国内版/国际版)</option>
           <option value="antigravity">Google Antigravity (Cloud Code PA)</option>
+          <option value="qoder">Alibaba Qoder</option>
+        </select>
+      </div>
+
+      <!-- Qoder ships as two deployments with different hosts; picking the
+           wrong one fails with a 401 that gives no hint the host was wrong. -->
+      <div id="import-realm-row" style="display: none;">
+        <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Qoder 区服</label>
+        <select id="import-realm">
+          <option value="cn">国内版 (gateway.qoder.com.cn)</option>
+          <option value="intl">国际版 (api2-v2.qoder.sh)</option>
         </select>
       </div>
 
       <div>
         <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">凭据 JSON 内容</label>
         <textarea id="import-json" rows="8" placeholder='{"type": "workbuddy", "accessToken": "eyJ...", "refreshToken": "..."}'></textarea>
+        <div id="import-hint" style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.35rem;"></div>
       </div>
 
       <div id="import-result" style="display: none; padding: 0.75rem; border-radius: 0.375rem; font-size: 0.75rem;"></div>
@@ -911,10 +923,38 @@ claude</pre>
     function openImportModal() {
       document.getElementById('import-result').style.display = 'none';
       document.getElementById('import-modal').classList.add('active');
+      // Seed the hint and the realm row for the currently selected type.
+      onImportTypeChange();
     }
 
     function closeImportModal() {
       document.getElementById('import-modal').classList.remove('active');
+    }
+
+    // Each provider expects a different credential shape, so the hint and the
+    // placeholder follow the selected type rather than describing only one.
+    const IMPORT_HINTS = {
+      workbuddy: {
+        placeholder: '{"type": "workbuddy", "accessToken": "eyJ...", "refreshToken": "..."}',
+        hint: '也可直接粘贴桌面客户端的 *.info 状态文件内容；区服会从 auth.domain 自动判定。'
+      },
+      antigravity: {
+        placeholder: '{"type": "antigravity", "access_token": "ya29...", "refresh_token": "1//...", "project_id": "..."}',
+        hint: '需要 providers.antigravity.client_id / client_secret 才能续期，否则令牌过期后该账号会失效。'
+      },
+      qoder: {
+        placeholder: '{"type": "qoder", "access_token": "pt-...", "account_name": "you@example.com"}',
+        hint: '推荐使用 pt- 个人访问令牌：网关会在首次请求时自动换取 jt-，并在过期后自动重新换取。'
+      }
+    };
+
+    function onImportTypeChange() {
+      const type = document.getElementById('import-type').value;
+      const meta = IMPORT_HINTS[type] || {};
+
+      document.getElementById('import-json').placeholder = meta.placeholder || '';
+      document.getElementById('import-hint').innerText = meta.hint || '';
+      document.getElementById('import-realm-row').style.display = type === 'qoder' ? 'block' : 'none';
     }
 
     async function doImport() {
@@ -939,6 +979,12 @@ claude</pre>
       if (!parsed.type) {
         parsed.type = typeSelect;
       }
+      // Qoder's realm selects the upstream host. A credential imported without
+      // one silently defaults to the international endpoints, so a CN account
+      // fails with a 401 that says nothing about the host being wrong.
+      if (parsed.type === 'qoder' && !parsed.realm) {
+        parsed.realm = document.getElementById('import-realm').value;
+      }
 
       btn.disabled = true;
       btn.innerText = '正在导入并获取模型...';
@@ -956,7 +1002,8 @@ claude</pre>
           resBox.style.background = 'rgba(16, 185, 129, 0.15)';
           resBox.style.color = '#34d399';
           resBox.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-          resBox.innerHTML = `✅ 导入成功！已加入连接池，并从上游 API 成功获取到 <b>${resp.models_count || 0}</b> 个可用模型！`;
+          const realmNote = resp.realm ? `（区服 <b>${escapeHtml(resp.realm)}</b>）` : '';
+          resBox.innerHTML = `✅ 导入成功！已加入连接池${realmNote}，并从上游 API 成功获取到 <b>${resp.models_count || 0}</b> 个可用模型！`;
           setTimeout(() => {
             closeImportModal();
             refreshData();
