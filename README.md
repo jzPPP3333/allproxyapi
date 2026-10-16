@@ -335,7 +335,10 @@ docker compose up -d --build
 go build ./...
 go vet ./...
 go test ./...
+node webui-test/dashboard.test.js   # 面板渲染测试（需 Node）
 ```
+
+面板是内嵌 HTML 里的手写 JS，没有构建步骤，所以拼写错误和过期的厂商假设 `go test` 看不到。`webui-test/dashboard.test.js` 把内嵌脚本抽出来，用最小 DOM 桩跑一遍渲染路径 —— 新增 provider 时尤其跑一下，否则很容易出现模型挂错厂商标签这类问题。
 
 ---
 

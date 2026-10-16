@@ -294,6 +294,11 @@
         <div class="stat-desc" id="stat-ag-desc">已同步 0 个云端模型</div>
       </div>
       <div class="card">
+        <div class="stat-title">Alibaba Qoder</div>
+        <div class="stat-value" id="stat-qoder" style="color: var(--success);">0</div>
+        <div class="stat-desc" id="stat-qoder-desc">已同步 0 个模型</div>
+      </div>
+      <div class="card">
         <div class="stat-title">可用模型总数</div>
         <div class="stat-value" id="stat-models" style="color: var(--success);">0</div>
         <div class="stat-desc">支持智能降级与实时搜索</div>
@@ -342,9 +347,8 @@
         <div style="display: flex; gap: 0.5rem; align-items: center;">
           <input type="text" id="model-search" placeholder="🔍 搜索模型名称或特性..." oninput="filterModels()" style="max-width: 220px; font-size: 0.75rem; padding: 0.35rem 0.6rem;">
           <select id="model-filter" onchange="filterModels()" style="max-width: 140px; font-size: 0.75rem; padding: 0.35rem;">
+            <!-- Rebuilt from the loaded models by renderProviderFilter(). -->
             <option value="all">全部通道</option>
-            <option value="workbuddy">Tencent WorkBuddy</option>
-            <option value="antigravity">Google Antigravity</option>
           </select>
         </div>
       </div>
@@ -434,6 +438,45 @@ claude</pre>
   <script>
     let ALL_MODELS = [];
 
+    // Per-provider display metadata. A provider the table does not know about
+    // still renders with its own id as the label, so adding an upstream never
+    // silently mislabels its models.
+    const PROVIDER_META = {
+      workbuddy:   { label: 'Tencent WorkBuddy',   short: 'WorkBuddy',   badge: 'badge-indigo' },
+      antigravity: { label: 'Google Antigravity',  short: 'Antigravity', badge: 'badge-blue' },
+      qoder:       { label: 'Alibaba Qoder',       short: 'Qoder',       badge: 'badge-green' }
+    };
+
+    function providerMeta(id) {
+      return PROVIDER_META[id] || { label: id || 'unknown', short: id || 'unknown', badge: 'badge-indigo' };
+    }
+
+    // The account row subtitle differs per provider: Antigravity shows its
+    // project, the others show the region they are pointed at.
+    function accountSubtitle(acc) {
+      if (acc.type === 'antigravity') return acc.project_id || 'aicode-consumers';
+      const region = acc.realm === 'cn' ? '国内版' : (acc.realm ? '国际版' : '');
+      return region || '—';
+    }
+
+    // Filters the model grid down to one account's provider. Referenced by the
+    // account row's model-count badge; it had no definition before, so the
+    // click did nothing.
+    //
+    // The filter is by provider, not by account: the aggregated list is
+    // deduplicated per provider, so an individual model cannot be attributed
+    // back to one of several accounts serving it.
+    function filterAccountModels(accountType) {
+      const sel = document.getElementById('model-filter');
+      sel.value = accountType;
+      if (sel.value !== accountType) return; // provider has no models listed
+      document.getElementById('model-search').value = '';
+      filterModels();
+
+      const container = document.getElementById('models-container');
+      if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
     async function refreshData() {
       try {
         const [statusRes, accountsRes, modelsRes] = await Promise.all([
@@ -449,9 +492,12 @@ claude</pre>
           const ag = byType.antigravity || {};
           const wb = byType.workbuddy || {};
 
+          const qoder = byType.qoder || {};
+
           document.getElementById('stat-total').innerText = total;
           document.getElementById('stat-wb').innerText = (wb.healthy || 0) + ' / ' + (wb.total || 0);
           document.getElementById('stat-ag').innerText = (ag.healthy || 0) + ' / ' + (ag.total || 0);
+          document.getElementById('stat-qoder').innerText = (qoder.healthy || 0) + ' / ' + (qoder.total || 0);
         }
 
         // 2. Accounts Table
@@ -461,15 +507,17 @@ claude</pre>
         } else {
           let wbModelsCount = 0;
           let agModelsCount = 0;
+          let qoderModelsCount = 0;
 
           tbody.innerHTML = accountsRes.map(acc => {
-            const isAg = acc.type === 'antigravity';
-            const badgeClass = isAg ? 'badge-blue' : 'badge-indigo';
-            const channelName = isAg ? 'Google Antigravity' : 'Tencent WorkBuddy';
-            const sub = isAg ? (acc.project_id || 'aicode-consumers') : (acc.realm === 'cn' ? '国内版' : '国际版');
+            const meta = providerMeta(acc.type);
+            const badgeClass = meta.badge;
+            const channelName = meta.label;
+            const sub = accountSubtitle(acc);
 
-            if (isAg) agModelsCount += (acc.model_count || 0);
-            else wbModelsCount += (acc.model_count || 0);
+            if (acc.type === 'antigravity') agModelsCount += (acc.model_count || 0);
+            else if (acc.type === 'workbuddy') wbModelsCount += (acc.model_count || 0);
+            else if (acc.type === 'qoder') qoderModelsCount += (acc.model_count || 0);
 
             let statusBadge = '<span class="badge badge-green">● 就绪</span>';
             if (acc.status === 'cooldown') {
@@ -479,7 +527,7 @@ claude</pre>
             }
 
             const modelBadge = acc.model_count > 0
-              ? `<span class="badge badge-green" style="cursor:pointer;" onclick="filterAccountModels('${acc.id}')">${acc.model_count} 个模型</span>`
+              ? `<span class="badge badge-green" style="cursor:pointer;" onclick="filterAccountModels('${acc.type}')">${acc.model_count} 个模型</span>`
               : `<span class="badge badge-gray">未获取</span>`;
 
             return `
@@ -503,11 +551,13 @@ claude</pre>
 
           if (wbModelsCount > 0) document.getElementById('stat-wb-desc').innerText = `已同步 ${wbModelsCount} 个原生模型`;
           if (agModelsCount > 0) document.getElementById('stat-ag-desc').innerText = `已同步 ${agModelsCount} 个云端模型`;
+          if (qoderModelsCount > 0) document.getElementById('stat-qoder-desc').innerText = `已同步 ${qoderModelsCount} 个模型`;
         }
 
         // 3. Models
         ALL_MODELS = modelsRes || [];
         document.getElementById('stat-models').innerText = ALL_MODELS.length;
+        renderProviderFilter();
         renderModels(ALL_MODELS);
 
       } catch (err) {
@@ -523,9 +573,9 @@ claude</pre>
       }
 
       mContainer.innerHTML = list.map(m => {
-        const isAg = m.provider === 'antigravity';
-        const badgeClass = isAg ? 'badge-blue' : 'badge-indigo';
-        const providerName = isAg ? 'Antigravity' : 'WorkBuddy';
+        const meta = providerMeta(m.provider);
+        const badgeClass = meta.badge;
+        const providerName = meta.label;
 
         let feats = '';
         if (m.supports_reasoning) feats += '<span class="model-feat">🧠 深度思考</span>';
@@ -554,6 +604,26 @@ claude</pre>
           </div>
         `;
       }).join('');
+    }
+
+    // The dropdown was a hardcoded list of two providers, so Qoder models could
+    // not be filtered to and were hidden whenever a filter was active. It is
+    // now built from the providers actually present in the data.
+    function renderProviderFilter() {
+      const sel = document.getElementById('model-filter');
+      const counts = {};
+      ALL_MODELS.forEach(m => { counts[m.provider] = (counts[m.provider] || 0) + 1; });
+
+      const previous = sel.value || 'all';
+      const options = ['<option value="all">全部通道 (' + ALL_MODELS.length + ')</option>'];
+      Object.keys(counts).sort().forEach(function (id) {
+        const meta = providerMeta(id);
+        options.push('<option value="' + id + '">' + meta.label + ' (' + counts[id] + ')</option>');
+      });
+      sel.innerHTML = options.join('');
+
+      // Keep the user's selection if that provider still has models.
+      sel.value = (previous !== 'all' && counts[previous]) ? previous : 'all';
     }
 
     function filterModels() {
