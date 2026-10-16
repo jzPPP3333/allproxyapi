@@ -2,6 +2,8 @@ package ingress
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -142,6 +144,11 @@ func (s *Server) ResolveProvider(model string) (provider string, upstreamModel s
 
 // callUpstream selects an account for the provider and calls it, failing over
 // across accounts. The returned response body is owned by the caller.
+//
+// Selection is delegated to the pool's dispatcher, which applies the health
+// filter, model capability matching and the value-weighted choice. Each failed
+// attempt parks the account it used, so the next attempt is a genuinely
+// different account rather than a retry of the same one.
 func (s *Server) callUpstream(ctx context.Context, provider string, req *openai.ChatCompletionRequest, rawBody []byte) (*http.Response, Upstream, error) {
 	up, ok := s.upstreams.GetByName(provider)
 	if !ok {
@@ -150,19 +157,37 @@ func (s *Server) callUpstream(ctx context.Context, provider string, req *openai.
 
 	const maxAttempts = 3
 	var lastErr error
+	var lastAcc *pool.Account
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		acc := s.pool.Pick(up.ID())
+		acc := s.pool.PickFor(pool.DispatchOptions{
+			Provider: up.ID(),
+			Model:    req.Model,
+			// A conversation sticks to one account so multi-turn requests are
+			// not spread across accounts, which would both hurt continuity and
+			// look like unrelated accounts sending similar contexts.
+			AffinityKey: sessionKey(req),
+		})
 		if acc == nil {
 			if lastErr != nil {
 				return nil, up, lastErr
 			}
 			return nil, up, fmt.Errorf("no available %s accounts in pool", up.Label())
 		}
+		// Retrying the account that just failed would be a wasted attempt.
+		if lastAcc != nil && acc.ID == lastAcc.ID {
+			acc = s.pool.PickFor(pool.DispatchOptions{Provider: up.ID(), Model: req.Model})
+			if acc == nil || acc.ID == lastAcc.ID {
+				break
+			}
+		}
 
+		acc.RecordDispatch()
 		resp, err := up.Chat(ctx, acc, req, rawBody)
+		acc.ReleaseDispatch()
+
 		if err != nil {
-			lastErr = err
+			lastErr, lastAcc = err, acc
 			log.Printf("[%s] 账号 %s 失败: %v, 故障转移重试 (%d/%d)", up.Label(), acc.Name, err, attempt+1, maxAttempts)
 			continue
 		}
@@ -170,6 +195,27 @@ func (s *Server) callUpstream(ctx context.Context, provider string, req *openai.
 	}
 
 	return nil, up, fmt.Errorf("all %s accounts failed: %w", up.Label(), lastErr)
+}
+
+// sessionKey derives a stable per-conversation key for affinity.
+//
+// The first user message is used because it is stable across the turns of one
+// conversation and differs between conversations. A request with no messages
+// gets no affinity, which is correct: there is nothing to stay consistent with.
+func sessionKey(req *openai.ChatCompletionRequest) string {
+	if req == nil || len(req.Messages) == 0 {
+		return ""
+	}
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		if text, ok := m.Content.(string); ok && text != "" {
+			sum := sha256.Sum256([]byte(text))
+			return hex.EncodeToString(sum[:16])
+		}
+	}
+	return ""
 }
 
 // forwardToOpenAI relays an upstream response to the client in OpenAI dialect.

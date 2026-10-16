@@ -159,17 +159,18 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		resp.Body.Close()
-		acc.SetCooldown(60*time.Second, "429 Too Many Requests")
+		acc.SetSoftCooldown(0, "429 Too Many Requests")
 		return nil, fmt.Errorf("antigravity rate limit (429)")
 	}
 
 	// 402 plus the Google quota signals mean the allowance is spent, not that
-	// the request was malformed. Park the account for a long window instead of
-	// the short rate-limit one.
+	// the request was malformed. Park the account until the daily reset rather
+	// than for an arbitrary window, since the allowance refills on the
+	// provider's schedule.
 	if isQuotaExhausted(resp.StatusCode) {
 		errBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		acc.SetCooldown(QuotaCooldown, quotaReason(resp.StatusCode, errBytes))
+		acc.SetHardCooldown(quotaReason(resp.StatusCode, errBytes))
 		return nil, fmt.Errorf("antigravity %s", quotaReason(resp.StatusCode, errBytes))
 	}
 
@@ -183,7 +184,9 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 			// Retry once with new token
 			return c.DoGenerate(ctx, acc, model, geminiReq, isStream)
 		}
-		acc.SetCooldown(300*time.Second, "401 Unauthorized")
+		// The credential is present but unusable and cannot be refreshed, so
+		// the account cannot recover without a human re-authenticating it.
+		acc.Disable("401 Unauthorized，且刷新失败")
 		return nil, fmt.Errorf("antigravity unauthorized (401)")
 	}
 
@@ -192,7 +195,7 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 		errBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if reason, ok := quotaTextReason(errBytes); ok {
-			acc.SetCooldown(QuotaCooldown, reason)
+			acc.SetHardCooldown(reason)
 			return nil, fmt.Errorf("antigravity %s", reason)
 		}
 		return nil, fmt.Errorf("antigravity upstream error (403): %s", string(errBytes))

@@ -59,6 +59,7 @@ const failingFetch = () => Promise.resolve({ json: () => Promise.resolve(null) }
 
 const runner = new Function('document', 'fetch', 'setInterval', 'setTimeout', appSource + `
   return { providerMeta, accountSubtitle, renderProviderFilter, renderModels, filterModels,
+           accountStatusBadge, accountRecoveryNote,
            setModels: (m) => { ALL_MODELS = m; }, getModels: () => ALL_MODELS };
 `);
 const api = runner(documentStub, failingFetch, noop, noop);
@@ -148,6 +149,55 @@ const filtered = elements['models-container'].innerHTML;
 check('filtering to qoder excludes workbuddy models',
   filtered.includes('qmodel') && !filtered.includes('>wb<'),
   'filter leaked a workbuddy model');
+
+console.log('account lifecycle badges');
+
+// Each lifecycle state must be visually distinct: an operator needs to tell at
+// a glance whether an account clears in minutes or waits for a daily reset.
+const badgeCases = [
+  ['healthy', 'badge-green', '就绪'],
+  ['cooling', 'badge-amber', '软冷却'],
+  ['frozen', 'badge-red', '硬冷却'],
+  ['dead', 'badge-red', '已失效'],
+  ['expired', 'badge-gray', '令牌过期'],
+];
+for (const [status, klass, label] of badgeCases) {
+  const html = api.accountStatusBadge({ status });
+  check(`status ${status} renders ${label}`, html.includes(klass) && html.includes(label), html);
+}
+
+check('an unknown status falls back to healthy',
+  api.accountStatusBadge({ status: 'something-new' }).includes('badge-green'));
+
+// Soft and hard cooldowns must not look the same.
+check('soft and hard cooldowns are visually distinct',
+  api.accountStatusBadge({ status: 'cooling' }) !== api.accountStatusBadge({ status: 'frozen' }));
+
+console.log('recovery countdown');
+
+// The server formats timestamps in its own local time (no timezone suffix), so
+// the fixture is built the same way rather than from a UTC ISO string.
+function localStamp(msFromNow) {
+  const d = new Date(Date.now() + msFromNow);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+         `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+const soonStamp = localStamp(30 * 60000);
+const note = api.accountRecoveryNote({ status: 'cooling', recover_at: soonStamp });
+check('a cooling account shows a countdown', note.includes('分钟'), note);
+
+check('a long wait is shown in hours',
+  api.accountRecoveryNote({ status: 'frozen', recover_at: localStamp(5 * 3600000) }).includes('小时'),
+  api.accountRecoveryNote({ status: 'frozen', recover_at: localStamp(5 * 3600000) }));
+
+check('a healthy account shows no countdown',
+  api.accountRecoveryNote({ status: 'healthy', recover_at: soonStamp }) === '');
+check('a missing timestamp shows no countdown',
+  api.accountRecoveryNote({ status: 'cooling' }) === '');
+check('a past timestamp shows no countdown',
+  api.accountRecoveryNote({ status: 'cooling', recover_at: localStamp(-60000) }) === '');
 
 if (failures > 0) {
   console.log(`\n${failures} check(s) failed`);

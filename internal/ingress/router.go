@@ -430,19 +430,30 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type AccountDTO struct {
-	ID         string               `json:"id"`
-	Type       string               `json:"type"`
-	Name       string               `json:"name"`
-	Status     string               `json:"status"` // "healthy", "cooldown", "expired"
-	FilePath   string               `json:"file_path,omitempty"`
-	ExpiresAt  string               `json:"expires_at"`
-	ProjectID  string               `json:"project_id,omitempty"`
-	Email      string               `json:"email,omitempty"`
-	UID        string               `json:"uid,omitempty"`
-	Realm      string               `json:"realm,omitempty"`
-	Product    string               `json:"product,omitempty"`
-	Domain     string               `json:"domain,omitempty"`
-	TokenMask  string               `json:"token_mask"`
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Status    string `json:"status"` // "healthy", "cooling", "frozen", "dead", "expired"
+	State     string `json:"state"`  // lifecycle state: active / soft_cooldown / hard_cooldown / disabled
+	StateNote string `json:"state_note,omitempty"`
+	// RecoverAt is when a cooling or frozen account is expected back, so the
+	// panel can show a countdown rather than a bare badge.
+	RecoverAt string `json:"recover_at,omitempty"`
+	FilePath  string `json:"file_path,omitempty"`
+	ExpiresAt string `json:"expires_at"`
+	ProjectID string `json:"project_id,omitempty"`
+	Email     string `json:"email,omitempty"`
+	UID       string `json:"uid,omitempty"`
+	Realm     string `json:"realm,omitempty"`
+	Product   string `json:"product,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+	TokenMask string `json:"token_mask"`
+	// Credits and CreditExpiresAt expose the remaining allowance and when it
+	// lapses, since dispatch spends the soonest-expiring allowance first.
+	Credits         string `json:"credits,omitempty"`
+	CreditExpiresAt string `json:"credit_expires_at,omitempty"`
+	InFlight        int    `json:"in_flight,omitempty"`
+
 	ModelCount int                  `json:"model_count"`
 	Models     []pool.ModelMetadata `json:"models,omitempty"`
 }
@@ -462,23 +473,41 @@ func (s *Server) handleAPIAccounts(w http.ResponseWriter, r *http.Request) {
 			expiresStr = acc.ExpiresAt.Format("2006-01-02 15:04:05")
 		}
 
+		snap := acc.Snapshot()
+
+		recoverAt := ""
+		if !snap.CooldownUntil.IsZero() {
+			recoverAt = snap.CooldownUntil.Format("2006-01-02 15:04:05")
+		}
+
+		creditExpiry := ""
+		if !acc.CreditExpiresAt.IsZero() {
+			creditExpiry = acc.CreditExpiresAt.Format("2006-01-02 15:04:05")
+		}
+
 		ms := acc.GetModels()
 		dtos = append(dtos, AccountDTO{
-			ID:         acc.ID,
-			Type:       string(acc.Type),
-			Name:       acc.Name,
-			Status:     acc.Status(),
-			FilePath:   acc.FilePath,
-			ExpiresAt:  expiresStr,
-			ProjectID:  acc.ProjectID,
-			Email:      acc.Email,
-			UID:        acc.UID,
-			Realm:      acc.Realm,
-			Product:    acc.Product,
-			Domain:     acc.Domain,
-			TokenMask:  mask,
-			ModelCount: len(ms),
-			Models:     ms,
+			ID:              acc.ID,
+			Type:            string(acc.Type),
+			Name:            acc.Name,
+			Status:          acc.Status(),
+			State:           string(snap.State),
+			StateNote:       snap.Reason,
+			RecoverAt:       recoverAt,
+			FilePath:        acc.FilePath,
+			ExpiresAt:       expiresStr,
+			ProjectID:       acc.ProjectID,
+			Email:           acc.Email,
+			UID:             acc.UID,
+			Realm:           acc.Realm,
+			Product:         acc.Product,
+			Domain:          acc.Domain,
+			TokenMask:       mask,
+			Credits:         acc.Credits,
+			CreditExpiresAt: creditExpiry,
+			InFlight:        acc.InFlight,
+			ModelCount:      len(ms),
+			Models:          ms,
 		})
 	}
 

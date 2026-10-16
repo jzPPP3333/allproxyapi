@@ -62,6 +62,7 @@
     .badge-indigo { background: rgba(99, 102, 241, 0.15); color: #818cf8; border-color: rgba(99, 102, 241, 0.3); }
     .badge-amber { background: rgba(245, 158, 11, 0.15); color: var(--warning); border-color: rgba(245, 158, 11, 0.3); }
     .badge-gray { background: rgba(156, 163, 175, 0.15); color: var(--text-muted); border-color: rgba(156, 163, 175, 0.3); }
+    .badge-red { background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: rgba(239, 68, 68, 0.3); }
 
     .btn {
       background: #1f2937;
@@ -477,6 +478,35 @@ claude</pre>
       if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
+    // The four lifecycle states map to distinct badges. A soft cooldown and a
+    // hard one read very differently to an operator: one clears in minutes, the
+    // other waits for the daily reset and cannot be hurried.
+    function accountStatusBadge(acc) {
+      switch (acc.status) {
+        case 'cooling':
+          return '<span class="badge badge-amber" title="限流冷却，会自行恢复">● 软冷却</span>';
+        case 'frozen':
+          return '<span class="badge badge-red" title="额度耗尽，等待每日重置">● 硬冷却</span>';
+        case 'dead':
+          return '<span class="badge badge-red" title="凭据失效，需要重新登录">● 已失效</span>';
+        case 'expired':
+          return '<span class="badge badge-gray" title="访问令牌已过期，将按需刷新">● 令牌过期</span>';
+        default:
+          return '<span class="badge badge-green">● 就绪</span>';
+      }
+    }
+
+    // Renders the remaining time on an account that is parked, so the operator
+    // does not have to work it out from an absolute timestamp.
+    function accountRecoveryNote(acc) {
+      if (!acc.recover_at || (acc.status !== 'cooling' && acc.status !== 'frozen')) return '';
+      const until = new Date(acc.recover_at.replace(' ', 'T'));
+      const mins = Math.round((until - new Date()) / 60000);
+      if (!isFinite(mins) || mins <= 0) return '';
+      const label = mins >= 60 ? Math.round(mins / 60) + ' 小时后' : mins + ' 分钟后';
+      return '<div style="font-size:0.65rem; color:var(--text-muted);">' + label + '恢复</div>';
+    }
+
     async function refreshData() {
       try {
         const [statusRes, accountsRes, modelsRes] = await Promise.all([
@@ -519,12 +549,7 @@ claude</pre>
             else if (acc.type === 'workbuddy') wbModelsCount += (acc.model_count || 0);
             else if (acc.type === 'qoder') qoderModelsCount += (acc.model_count || 0);
 
-            let statusBadge = '<span class="badge badge-green">● 就绪</span>';
-            if (acc.status === 'cooldown') {
-              statusBadge = '<span class="badge badge-amber">● 冷却中</span>';
-            } else if (acc.status === 'expired') {
-              statusBadge = '<span class="badge badge-gray">● 已过期</span>';
-            }
+            const statusBadge = accountStatusBadge(acc);
 
             const modelBadge = acc.model_count > 0
               ? `<span class="badge badge-green" style="cursor:pointer;" onclick="filterAccountModels('${acc.type}')">${acc.model_count} 个模型</span>`
@@ -537,7 +562,7 @@ claude</pre>
                 <td style="color: var(--text-muted); font-size: 0.8rem;">${escapeHtml(sub)}</td>
                 <td style="font-family: monospace; font-size: 0.75rem; color: #94a3b8;">${escapeHtml(acc.token_mask || '已配置')}</td>
                 <td>${modelBadge}</td>
-                <td>${statusBadge}</td>
+                <td>${statusBadge}${accountRecoveryNote(acc)}</td>
                 <td style="color: var(--text-muted); font-size: 0.75rem;">${escapeHtml(acc.expires_at || '未知')}</td>
                 <td>
                   <div style="display: flex; gap: 0.35rem;">

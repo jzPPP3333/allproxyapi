@@ -149,8 +149,13 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 	// A personal token is not accepted by the inference host until it has been
 	// exchanged for a job token. Doing it here rather than relying on a 401
 	// retry means the first request already goes out with a usable credential.
+	//
+	// A failed exchange is a credential problem, not a transient one, so the
+	// account is taken out of rotation. Without this it would be selected again
+	// on the very next request and fail identically.
 	if NeedsExchange(acc) {
 		if err := RefreshAccount(ctx, acc, c.regionOf(acc), c.cfg.AuthURL, c.cfg.Proxy); err != nil {
+			acc.Disable(fmt.Sprintf("个人令牌换取失败: %v", err))
 			return nil, wrapErr("exchange personal token", err)
 		}
 	}
@@ -159,6 +164,10 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 	if err != nil {
 		return nil, err
 	}
+
+	// The model is needed to scope a per-model cooldown when the upstream
+	// rate-limits a single model rather than the whole account.
+	reqModel := modelOf(reqBody)
 
 	// The fingerprint is derived, not random: it must stay constant across
 	// restarts or the upstream sees a new device on every launch.
@@ -210,9 +219,13 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
+		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		acc.SetCooldown(60*time.Second, "429 Too Many Requests")
-		return nil, fmt.Errorf("qoder rate limit (429)")
+		// The OpenAI-compatible route limits per model, so the cooldown is
+		// scoped to the model that was limited rather than removing the
+		// account from rotation for every model.
+		acc.SetModelCooldown(reqModel, 0, "429 Too Many Requests")
+		return nil, fmt.Errorf("qoder rate limit (429): %s", truncate(raw, 200))
 
 	case isQuotaExhausted(resp.StatusCode):
 		raw, _ := io.ReadAll(resp.Body)
@@ -223,7 +236,7 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 		}
 		// Quota exhaustion is not transient: cooling the account down for the
 		// rate-limit window would just burn the same failing account again.
-		acc.SetCooldown(QuotaCooldown, reason)
+		acc.SetHardCooldown(reason)
 		return nil, fmt.Errorf("qoder %s: %s", reason, truncate(raw, 256))
 
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
@@ -231,7 +244,7 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 		if refreshErr := RefreshAccount(ctx, acc, c.regionOf(acc), c.cfg.AuthURL, c.cfg.Proxy); refreshErr == nil {
 			return c.Chat(ctx, acc, reqBody)
 		}
-		acc.SetCooldown(300*time.Second, fmt.Sprintf("%d Unauthorized", resp.StatusCode))
+		acc.Disable(fmt.Sprintf("%d Unauthorized，且刷新失败", resp.StatusCode))
 		return nil, fmt.Errorf("qoder unauthorized (%d)", resp.StatusCode)
 
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
@@ -241,6 +254,18 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 	}
 
 	return resp, nil
+}
+
+// modelOf reads the model name out of an OpenAI-shaped request body. An
+// unreadable body yields "", which callers treat as "no model scope".
+func modelOf(reqBody []byte) string {
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(reqBody, &probe); err != nil {
+		return ""
+	}
+	return probe.Model
 }
 
 // decorate injects the metadata block the inference host expects while leaving

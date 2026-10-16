@@ -96,6 +96,18 @@ func Catalog() []pool.ModelMetadata {
 	return out
 }
 
+// modelOf reads the model name out of an OpenAI-shaped request body, used to
+// scope a per-model cooldown.
+func modelOf(reqBody []byte) string {
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(reqBody, &probe); err != nil {
+		return ""
+	}
+	return probe.Model
+}
+
 // DoChat forwards a chat completion request to WorkBuddy upstream /v2/chat/completions.
 func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) (*http.Response, error) {
 	realm := "cn"
@@ -121,18 +133,21 @@ func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) 
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests {
+		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		acc.SetCooldown(60*time.Second, "429 Too Many Requests")
-		return nil, fmt.Errorf("upstream rate limit (429)")
+		// A concurrency cap is per model on this upstream, so only the model
+		// that was capped is parked.
+		acc.SetModelCooldown(modelOf(reqBody), 0, "429 Too Many Requests")
+		return nil, fmt.Errorf("upstream rate limit (429): %s", truncateForMessage(raw))
 	}
 
-	// Exhausted quota is not transient: park the account for the long window so
-	// the pool routes around it rather than retrying into the same limit.
+	// Exhausted quota is not transient: park the account until the allowance
+	// refills rather than retrying into the same limit.
 	if isQuotaExhausted(resp.StatusCode) {
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		reason := quotaReason(resp.StatusCode, raw)
-		acc.SetCooldown(QuotaCooldown, reason)
+		acc.SetHardCooldown(reason)
 		return nil, fmt.Errorf("workbuddy %s", reason)
 	}
 
@@ -143,7 +158,7 @@ func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) 
 			// Retry once with new token
 			return c.DoChat(ctx, acc, reqBody)
 		}
-		acc.SetCooldown(300*time.Second, "401 Unauthorized")
+		acc.Disable("401 Unauthorized，且刷新失败")
 		return nil, fmt.Errorf("upstream unauthorized (401)")
 	}
 
@@ -152,7 +167,7 @@ func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) 
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if reason, ok := quotaTextReason(raw); ok {
-			acc.SetCooldown(QuotaCooldown, reason)
+			acc.SetHardCooldown(reason)
 			return nil, fmt.Errorf("workbuddy %s", reason)
 		}
 		return nil, fmt.Errorf("workbuddy upstream error (403): %s", string(raw))
