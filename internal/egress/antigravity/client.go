@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jzPPP3333/allproxyapi/internal/config"
@@ -21,6 +23,10 @@ import (
 type Client struct {
 	cfg        *config.AntigravityConfig
 	httpClient *http.Client
+
+	// discMu guards the per-account discovery cache.
+	discMu    sync.RWMutex
+	discCache map[string]discoveryEntry
 }
 
 func NewClient(cfg *config.AntigravityConfig) *Client {
@@ -205,14 +211,26 @@ func (c *Client) GetDefaultModels() []string {
 	return CatalogIDs()
 }
 
-// FetchModels returns available models for the Antigravity account.
+// FetchModels returns the account's available models, discovering them from
+// the upstream and falling back to the static catalog when discovery is
+// unavailable.
 //
-// The Cloud Code PA exposes no model-list route, so the catalog is static.
-// It is the same set GetDefaultModels reports, so the dashboard and
-// /v1/models can never disagree about what this provider serves.
+// Discovery is preferred because the upstream's model set changes without
+// notice; the static catalog is a floor so the provider still advertises
+// something usable when the endpoint errors, the credential is stale, or the
+// deployment blocks it.
 func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error) {
 	if existing := acc.GetModels(); len(existing) > 0 {
 		return existing, nil
+	}
+
+	discovered, err := c.FetchAvailableModels(ctx, acc)
+	if err == nil && len(discovered) > 0 {
+		acc.SetModels(discovered)
+		return discovered, nil
+	}
+	if err != nil {
+		log.Printf("[Antigravity] 账号 %s 动态模型发现失败，回退到静态目录: %v", acc.Name, err)
 	}
 
 	list := CatalogCopy()
