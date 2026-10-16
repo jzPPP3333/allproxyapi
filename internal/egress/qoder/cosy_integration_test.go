@@ -56,7 +56,7 @@ func TestChatSealsRequestBodyWhenCOSYConfigured(t *testing.T) {
 	acc := &pool.Account{
 		ID:          "q-1",
 		AccountName: "user@example.com",
-		AccessToken: "pt-smoke",
+		AccessToken: "dt-smoke",
 	}
 
 	reqBody := []byte(`{"model":"ultimate","messages":[{"role":"user","content":"hello"}],"stream":true}`)
@@ -122,7 +122,7 @@ func TestChatSendsPlainBodyWithoutCOSY(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(config.QoderConfig{Region: "intl", BaseURL: srv.URL})
-	acc := &pool.Account{ID: "q-1", AccountName: "user@example.com", AccessToken: "pt-smoke"}
+	acc := &pool.Account{ID: "q-1", AccountName: "user@example.com", AccessToken: "dt-smoke"}
 
 	resp, err := client.Chat(context.Background(), acc, []byte(`{"model":"ultimate","messages":[],"stream":true}`))
 	if err != nil {
@@ -153,7 +153,7 @@ func TestChatDerivesStableFingerprintHeaders(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(config.QoderConfig{Region: "intl", BaseURL: srv.URL})
-	acc := &pool.Account{ID: "q-1", AccountName: "user@example.com", AccessToken: "pt-smoke"}
+	acc := &pool.Account{ID: "q-1", AccountName: "user@example.com", AccessToken: "dt-smoke"}
 
 	for i := 0; i < 2; i++ {
 		resp, err := client.Chat(context.Background(), acc, []byte(`{"model":"ultimate","messages":[]}`))

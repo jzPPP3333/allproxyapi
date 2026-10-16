@@ -710,8 +710,11 @@ func (s *Server) handleAPIImportAccount(w http.ResponseWriter, r *http.Request) 
 		_ = pool.SaveAccountToFile(acc)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	// Realm is echoed because it selects the upstream host: a Qoder credential
+	// imported without one silently defaults to the international endpoints, so
+	// a CN account pointed at the wrong host would otherwise fail with a 401
+	// that gives no hint as to why.
+	resp := map[string]interface{}{
 		"status":       "ok",
 		"account_id":   acc.ID,
 		"type":         acc.Type,
@@ -719,7 +722,13 @@ func (s *Server) handleAPIImportAccount(w http.ResponseWriter, r *http.Request) 
 		"models_count": len(ms),
 		"models":       ms,
 		"fetch_error":  fetchErrMsg,
-	})
+	}
+	if acc.Realm != "" {
+		resp["realm"] = acc.Realm
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleAPIResetCooldown(w http.ResponseWriter, r *http.Request) {

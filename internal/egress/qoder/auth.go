@@ -145,9 +145,14 @@ func RefreshJobToken(ctx context.Context, refreshToken, region, authURLOverride,
 	return token, parsed.RefreshToken, parsed.expiry(), nil
 }
 
-// RefreshAccount refreshes an account in place. A pt- personal token is
-// exchanged for a job token; a drt- refresh token is refreshed. Any other
-// credential has no refresh path and reports as non-refreshable.
+// RefreshAccount obtains a fresh usable token for an account, in place.
+//
+// A pt- personal token is long-lived but not directly usable: it is exchanged
+// for a short-lived job token. The pt- is retained in the refresh field so the
+// exchange can be repeated indefinitely, which is what makes a pt- import
+// self-renewing rather than something that dies when its first job token does.
+// A drt- device refresh token is refreshed normally. Nothing else has a
+// renewal path.
 func RefreshAccount(ctx context.Context, acc *pool.Account, region, authURLOverride, proxyURL string) error {
 	switch {
 	case strings.HasPrefix(acc.RefreshToken, PrefixDeviceRefresh):
@@ -162,11 +167,23 @@ func RefreshAccount(ctx context.Context, acc *pool.Account, region, authURLOverr
 		return nil
 
 	case strings.HasPrefix(acc.AccessToken, PrefixPersonal):
-		token, expiry, err := ExchangePersonalToken(ctx, acc.AccessToken, region, authURLOverride, proxyURL)
+		personal := acc.AccessToken
+		token, expiry, err := ExchangePersonalToken(ctx, personal, region, authURLOverride, proxyURL)
 		if err != nil {
 			return err
 		}
-		acc.SetTokens(token, "", expiry)
+		acc.SetTokens(token, personal, expiry)
+		return nil
+
+	case strings.HasPrefix(acc.RefreshToken, PrefixPersonal):
+		// A job token obtained earlier has expired; re-exchange the personal
+		// token kept in the refresh field.
+		personal := acc.RefreshToken
+		token, expiry, err := ExchangePersonalToken(ctx, personal, region, authURLOverride, proxyURL)
+		if err != nil {
+			return err
+		}
+		acc.SetTokens(token, personal, expiry)
 		return nil
 
 	default:
@@ -174,9 +191,13 @@ func RefreshAccount(ctx context.Context, acc *pool.Account, region, authURLOverr
 	}
 }
 
-// NeedsExchange reports whether a credential must be exchanged before first use.
+// NeedsExchange reports whether a credential must be exchanged before first
+// use, which is true for a personal token that has not been converted yet.
 func NeedsExchange(acc *pool.Account) bool {
-	return strings.HasPrefix(acc.AccessToken, PrefixPersonal)
+	if acc == nil {
+		return false
+	}
+	return strings.HasPrefix(acc.AccessToken, PrefixPersonal) && !strings.HasPrefix(acc.RefreshToken, PrefixPersonal)
 }
 
 func truncate(b []byte, max int) string {

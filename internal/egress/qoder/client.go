@@ -146,6 +146,15 @@ type metadataBlock struct {
 func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*http.Response, error) {
 	endpoint := resolveBaseURL(c.regionOf(acc), c.cfg.BaseURL) + ChatPath
 
+	// A personal token is not accepted by the inference host until it has been
+	// exchanged for a job token. Doing it here rather than relying on a 401
+	// retry means the first request already goes out with a usable credential.
+	if NeedsExchange(acc) {
+		if err := RefreshAccount(ctx, acc, c.regionOf(acc), c.cfg.AuthURL, c.cfg.Proxy); err != nil {
+			return nil, wrapErr("exchange personal token", err)
+		}
+	}
+
 	body, err := c.decorate(reqBody)
 	if err != nil {
 		return nil, err
