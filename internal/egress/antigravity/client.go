@@ -82,13 +82,9 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 		endpoint = baseURL + "/v1internal:streamGenerateContent?alt=sse"
 	}
 
-	projectID := acc.ProjectID
-	if projectID == "" {
-		projectID = c.cfg.DefaultProject
-	}
-	if projectID == "" {
-		projectID = DefaultProjectID
-	}
+	// The envelope needs a project id; discover it from the credential when the
+	// account did not arrive with one.
+	projectID := c.ResolveProject(ctx, acc)
 
 	// Generate negative random sessionId as STRING if absent
 	if _, ok := geminiReq["sessionId"]; !ok {
@@ -161,15 +157,39 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 		return nil, fmt.Errorf("antigravity rate limit (429)")
 	}
 
+	// 402 plus the Google quota signals mean the allowance is spent, not that
+	// the request was malformed. Park the account for a long window instead of
+	// the short rate-limit one.
+	if isQuotaExhausted(resp.StatusCode) {
+		errBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		acc.SetCooldown(QuotaCooldown, quotaReason(resp.StatusCode, errBytes))
+		return nil, fmt.Errorf("antigravity %s", quotaReason(resp.StatusCode, errBytes))
+	}
+
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
 		// Try token refresh
 		if refreshErr := RefreshToken(ctx, acc, c.cfg.ClientID, c.cfg.ClientSecret, c.cfg.Proxy); refreshErr == nil {
+			// A fresh credential may belong to a different project, so a stale
+			// cached project id must not be reused.
+			ForgetProject(acc.ID)
 			// Retry once with new token
 			return c.DoGenerate(ctx, acc, model, geminiReq, isStream)
 		}
 		acc.SetCooldown(300*time.Second, "401 Unauthorized")
 		return nil, fmt.Errorf("antigravity unauthorized (401)")
+	}
+
+	// A 403 naming quota is the same exhaustion signal under a different code.
+	if resp.StatusCode == http.StatusForbidden {
+		errBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if reason, ok := quotaTextReason(errBytes); ok {
+			acc.SetCooldown(QuotaCooldown, reason)
+			return nil, fmt.Errorf("antigravity %s", reason)
+		}
+		return nil, fmt.Errorf("antigravity upstream error (403): %s", string(errBytes))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

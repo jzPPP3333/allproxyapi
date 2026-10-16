@@ -6,6 +6,11 @@ import (
 	"github.com/jzPPP3333/allproxyapi/internal/config"
 )
 
+// configForTest is the baseline config shared by the package's tests.
+func configForTest() config.QoderConfig {
+	return config.QoderConfig{Region: "intl", ClientVersion: "1.1.49"}
+}
+
 func TestNormalizeModel(t *testing.T) {
 	cases := map[string]string{
 		"":                    "ultimate",

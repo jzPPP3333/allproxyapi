@@ -31,6 +31,12 @@ providers:
   workbuddy:
     default_realm: "cn"
     default_product: "workbuddy"
+    # Daily check-in is deployment specific: the route differs between the CN
+    # and international deployments, so it is configured rather than guessed.
+    # Leave empty to skip check-in for this provider entirely.
+    checkin_path: ""
+    daily_checkin: false
+    checkin_hour: 9
 
   # Alibaba Qoder. The inference host exposes an OpenAI-compatible
   # /model/v1/chat/completions route that needs no request signing.
@@ -44,6 +50,25 @@ providers:
     auth_url: ""
     client_version: "1.1.49"
     proxy: ""
+    # Daily check-in; same rules as WorkBuddy above.
+    checkin_path: ""
+    daily_checkin: false
+    checkin_hour: 9
+
+    # COSY request envelope. Empty public_key_pem sends requests as plain JSON,
+    # which the public inference host accepts. Fill this in to match a client
+    # build that signs its traffic. The key material is copied from your own
+    # Qoder installation and is intentionally not shipped with this repo, the
+    # same way the Antigravity OAuth client credentials are not.
+    cosy:
+      public_key_pem: ""
+      private_key_pem: ""
+      # "RSA-OAEP-SHA256" (default) or "RSA-PKCS1v15"
+      key_alg: ""
+      # Optional 64-character base64 dictionary override.
+      alphabet: ""
+      # Optional envelope HMAC key; empty disables signing.
+      sign_key: ""
 
 routing:
   # Provider used when no model rule matches. Must be a registered provider id.

@@ -57,6 +57,10 @@ func (a *antigravityAdapter) Unwrap(src io.Reader) (io.Reader, error) {
 	return antigravity.Unwrap(src)
 }
 
+func (a *antigravityAdapter) Checkin(ctx context.Context, acc *pool.Account) (pool.CheckinResult, error) {
+	return a.client.Checkin(ctx, acc)
+}
+
 // ---------------------------------------------------------------------------
 // Tencent WorkBuddy / CodeBuddy
 //
@@ -66,11 +70,15 @@ func (a *antigravityAdapter) Unwrap(src io.Reader) (io.Reader, error) {
 // ---------------------------------------------------------------------------
 
 type workBuddyAdapter struct {
-	client *workbuddy.Client
+	client      *workbuddy.Client
+	checkinPath string
 }
 
 // NewWorkBuddyAdapter wraps the WorkBuddy client as an upstream adapter.
-func NewWorkBuddyAdapter(c *workbuddy.Client) Upstream { return &workBuddyAdapter{client: c} }
+// checkinPath is the configured daily check-in route; empty disables it.
+func NewWorkBuddyAdapter(c *workbuddy.Client, checkinPath string) Upstream {
+	return &workBuddyAdapter{client: c, checkinPath: checkinPath}
+}
 
 func (a *workBuddyAdapter) ID() pool.AccountType { return pool.TypeWorkBuddy }
 func (a *workBuddyAdapter) Label() string        { return "WorkBuddy" }
@@ -96,6 +104,10 @@ func (a *workBuddyAdapter) Chat(ctx context.Context, acc *pool.Account, req *ope
 
 func (a *workBuddyAdapter) Unwrap(src io.Reader) (io.Reader, error) { return src, nil }
 
+func (a *workBuddyAdapter) Checkin(ctx context.Context, acc *pool.Account) (pool.CheckinResult, error) {
+	return a.client.Checkin(ctx, acc, a.checkinPath)
+}
+
 // ---------------------------------------------------------------------------
 // Qoder (Alibaba)
 //
@@ -104,11 +116,15 @@ func (a *workBuddyAdapter) Unwrap(src io.Reader) (io.Reader, error) { return src
 // ---------------------------------------------------------------------------
 
 type qoderAdapter struct {
-	client *qoder.Client
+	client      *qoder.Client
+	checkinPath string
 }
 
 // NewQoderAdapter wraps the Qoder client as an upstream adapter.
-func NewQoderAdapter(c *qoder.Client) Upstream { return &qoderAdapter{client: c} }
+// checkinPath is the configured daily check-in route; empty disables it.
+func NewQoderAdapter(c *qoder.Client, checkinPath string) Upstream {
+	return &qoderAdapter{client: c, checkinPath: checkinPath}
+}
 
 func (a *qoderAdapter) ID() pool.AccountType { return pool.TypeQoder }
 func (a *qoderAdapter) Label() string        { return "Qoder" }
@@ -136,6 +152,10 @@ func (a *qoderAdapter) Chat(ctx context.Context, acc *pool.Account, req *openai.
 }
 
 func (a *qoderAdapter) Unwrap(src io.Reader) (io.Reader, error) { return src, nil }
+
+func (a *qoderAdapter) Checkin(ctx context.Context, acc *pool.Account) (pool.CheckinResult, error) {
+	return a.client.Checkin(ctx, acc, a.checkinPath)
+}
 
 // withOverrides re-encodes a raw request body with the (possibly rewritten)
 // model and any adapter-specific field overrides, preserving every other field

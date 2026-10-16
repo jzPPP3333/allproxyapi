@@ -26,6 +26,7 @@ type Server struct {
 	pool      *pool.AccountPool
 	upstreams *Registry
 	mux       *http.ServeMux
+	checkin   *CheckinScheduler
 }
 
 func NewServer(cfg *config.Config, p *pool.AccountPool, upstreams *Registry) *Server {
@@ -38,6 +39,11 @@ func NewServer(cfg *config.Config, p *pool.AccountPool, upstreams *Registry) *Se
 	s.setupRoutes()
 	return s
 }
+
+// AttachCheckinScheduler links the daily scheduler so the dashboard can report
+// its most recent run. It is optional: without it the check-in API still works,
+// it simply has no scheduled summary to show.
+func (s *Server) AttachCheckinScheduler(sched *CheckinScheduler) { s.checkin = sched }
 
 func (s *Server) Handler() http.Handler {
 	return s.loggingMiddleware(s.corsMiddleware(s.authMiddleware(s.mux)))
@@ -91,6 +97,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/accounts/sync-models", s.handleAPISyncModels)
 	s.mux.HandleFunc("/api/accounts/import", s.handleAPIImportAccount)
 	s.mux.HandleFunc("/api/models", s.handleAPIModels)
+	s.mux.HandleFunc("/api/checkin", s.handleAPICheckin)
 
 	// Embedded Web Dashboard
 	web.RegisterRoutes(s.mux)
@@ -700,6 +707,80 @@ func (s *Server) handleAPIResetCooldown(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleAPICheckin serves the daily check-in.
+//
+//	GET  /api/checkin              -> the last scheduled run, if any
+//	POST /api/checkin              -> run now for every provider
+//	POST /api/checkin?provider=X   -> run now for one provider
+//	POST /api/checkin?provider=X&id=Y -> run now for one account
+func (s *Server) handleAPICheckin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == http.MethodGet {
+		last := pool.CheckinSummary{}
+		if s.checkin != nil {
+			if summary := s.checkin.Last(); summary != nil {
+				last = *summary
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"last_run":  last,
+			"providers": s.checkinProviders(),
+		})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	accountID := strings.TrimSpace(r.URL.Query().Get("id"))
+
+	var summary pool.CheckinSummary
+	if provider != "" {
+		summary = s.RunCheckin(ctx, provider, accountID)
+	} else {
+		summary = s.RunCheckinAll(ctx)
+	}
+
+	_ = json.NewEncoder(w).Encode(summary)
+}
+
+// checkinProviders reports which providers have a check-in route configured, so
+// the dashboard can distinguish "nothing to do" from "not set up".
+func (s *Server) checkinProviders() []map[string]interface{} {
+	registered := s.upstreams.All()
+	out := make([]map[string]interface{}, 0, len(registered))
+	for _, up := range registered {
+		out = append(out, map[string]interface{}{
+			"id":        string(up.ID()),
+			"label":     up.Label(),
+			"accounts":  s.pool.Count(up.ID()),
+			"supported": s.providerSupportsCheckin(up.ID()),
+		})
+	}
+	return out
+}
+
+// providerSupportsCheckin reports whether a provider's configured check-in path
+// is non-empty.
+func (s *Server) providerSupportsCheckin(id pool.AccountType) bool {
+	switch id {
+	case pool.TypeWorkBuddy:
+		return strings.TrimSpace(s.cfg.Providers.WorkBuddy.CheckinPath) != ""
+	case pool.TypeQoder:
+		return strings.TrimSpace(s.cfg.Providers.Qoder.CheckinPath) != ""
+	default:
+		return false
+	}
 }
 
 func (s *Server) aggregateOpenAISSEToJSON(w http.ResponseWriter, src io.Reader, model string) {

@@ -32,13 +32,15 @@ internal/
     upstream.go             Upstream 接口 + Registry + 路由解析 + 响应转发
     adapters.go             三个 provider 的 adapter 实现
     router.go               HTTP 路由、鉴权、面板 API
+    checkin.go              签到编排
+    checkin_schedule.go     每日签到调度器
     translator.go           OpenAI ⇄ Gemini ⇄ Anthropic 协议转换
     schema.go               Gemini 工具参数 schema 净化
     openai/, anthropic/     下游协议类型定义
   egress/
-    antigravity/            Cloud Code PA 客户端 + envelope 解包
-    workbuddy/              双 region 客户端 + 身份指纹头
-    qoder/                  region 端点 + 凭据交换/刷新 + 模型别名
+    antigravity/            Cloud Code PA 客户端 + envelope 解包 + project 嗅探
+    workbuddy/              双 region 客户端 + 身份指纹头 + 签到
+    qoder/                  region 端点 + 凭据交换/刷新 + COSY 信封 + 设备指纹 + 签到
   web/                      内嵌控制面板
   webtools/                 可选的联网搜索注入
 ```
@@ -54,6 +56,7 @@ type Upstream interface {
     FetchModels(ctx, *pool.Account) ([]pool.ModelMetadata, error)
     Chat(ctx, *pool.Account, *openai.ChatCompletionRequest, rawBody []byte) (*http.Response, error)
     Unwrap(io.Reader) (io.Reader, error)
+    Checkin(ctx, *pool.Account) (pool.CheckinResult, error)     // 无签到概念时返回 unsupported
 }
 ```
 
@@ -110,7 +113,10 @@ curl http://127.0.0.1:8320/v1/messages \
 | `GET /v1/models` | 上游动态发现 + 静态兜底 |
 | `POST /v1/messages/count_tokens` | token 估算 |
 | `GET /health` | 健康检查与账号池状态 |
-| `GET /api/*` | 控制面板 API |
+| `GET /api/status` | 面板状态 |
+| `POST /api/checkin` | 立即签到（可带 `provider` / `id` 过滤） |
+| `GET /api/checkin` | 上次调度结果与各通道签到支持情况 |
+| `GET /api/*` | 其余控制面板 API |
 
 ---
 
@@ -186,6 +192,78 @@ Qoder 凭据的处理规则：
 
 **Qoder 未经实机验证的假设**：默认 host 对（intl `api2-v2.qoder.sh` / cn `gateway.qoder.com.cn`）与 OpenAI 兼容路由 `/model/v1/chat/completions` 来自公开的社区逆向记录，未经本仓库对真实账号的端到端验证。若上游迁移，改 `providers.qoder.base_url` / `auth_url` 即可，无需改代码。
 
+### Qoder COSY 信封
+
+Qoder 客户端可以给请求套一层加密信封。网关内置了完整的纯 Go 实现（RSA 包裹会话密钥、AES-128-CBC 载荷、自定义 base64 字典、HMAC 签名），默认**关闭**——公共推理主机接受明文 JSON。
+
+```
+
+        明文 JSON ──► AES-128-CBC（随机 session key + IV）──────────┐
+                          │                                        │
+                          └── session key ──► RSA 公钥包裹 ──► "ek" │
+                                                                    ▼
+        字典编码( JSON{v, alg, key_alg, ek, iv, data, ts, nonce, sig} )
+```
+
+启用时把密钥填进 `data/config.yaml`：
+
+```yaml
+providers:
+  qoder:
+    cosy:
+      public_key_pem: |
+        -----BEGIN PUBLIC KEY-----
+        ...
+        -----END PUBLIC KEY-----
+      key_alg: "RSA-OAEP-SHA256"   # 或 RSA-PKCS1v15
+      sign_key: "<可选 HMAC 密钥>"
+```
+
+配置项含义：
+
+| 字段 | 说明 |
+|---|---|
+| `public_key_pem` | 包裹会话密钥的服务器 RSA 公钥，留空则关闭信封 |
+| `private_key_pem` | 仅在上游回包同样加密时才需要 |
+| `key_alg` | RSA 填充模式，默认 OAEP-SHA256 |
+| `alphabet` | 覆盖默认的 64 字符 base64 字典 |
+| `sign_key` | 非空则对 `iv‖密文‖时间戳` 做 HMAC-SHA256 |
+
+密钥解析失败时信封会保持关闭并在日志中报错，不会静默发送上游无法解读的请求。
+
+设备指纹（`X-Machine-Id` / `X-Machine-Token`）由账号身份派生并持久化，而非每次启动随机生成——随机值会让上游把同一个账号当成一台新设备，从而触发风控。派生规则见 [fingerprint.go](internal/egress/qoder/fingerprint.go)。
+
+### 项目 ID 自动嗅探
+
+Antigravity 的信封需要一个 project id。账号文件里没有时，网关会调用 `v1internal:loadCodeAssist` 自动探测，缓存后写回账号文件；探测失败则回退到 `providers.antigravity.default_project`，不影响正常请求。
+
+### 每日签到
+
+签到路由因部署而异，因此**不硬编码**，而是按 provider 配置。未配置时该通道报告为 `unsupported`，不会拿探测到的 URL 去打真实账号。
+
+```yaml
+providers:
+  workbuddy:
+    checkin_path: "/v2/<你的签到路由>"
+    daily_checkin: true
+    checkin_hour: 9
+```
+
+手动触发或查看上次结果：
+
+```bash
+curl http://127.0.0.1:8320/api/checkin                                   # 上次调度结果 + 各通道支持情况
+curl -X POST http://127.0.0.1:8320/api/checkin                           # 立即为所有通道签到
+curl -X POST "http://127.0.0.1:8320/api/checkin?provider=qoder"          # 指定通道
+curl -X POST "http://127.0.0.1:8320/api/checkin?provider=qoder&id=<acc>" # 指定账号
+```
+
+Antigravity 的额度随 Google 套餐发放，没有客户端侧签到动作，固定报告 `unsupported`。
+
+### 额度耗尽冷却
+
+额度耗尽与限流性质不同：前者不会在短时间内恢复。因此响应 `402`，或响应体携带额度耗尽码（Qoder/WorkBuddy `6004`/`6005`/`10006`，Gemini `RESOURCE_EXHAUSTED`）时，账号会被冷却 **30 分钟**，而不是限流的 60 秒，让账号池直接绕开它而不是反复撞同一堵墙。
+
 ---
 
 ## 控制面板
@@ -198,6 +276,39 @@ Qoder 凭据的处理规则：
 - 提交前故障转移：最多重试 3 次，每次换号。
 - 429 → 冷却 60s；401/403 → 刷新后重试一次，失败则冷却 300s。
 - 后台 `refresher` 每 60s 检查并续期即将过期的凭据。
+
+---
+
+## 构建与部署
+
+**本地构建**
+
+```bash
+go build -o allproxyapi ./cmd/proxy
+go build ./... && go vet ./... && go test ./...
+```
+
+**跨平台打包** —— 一次产出 6 个目标，每个都带示例配置与许可证：
+
+```bash
+./build.sh                    # 全部目标
+./build.sh linux/amd64        # 指定目标
+```
+
+产物在 `dist/`，含 `windows/amd64`、`windows/arm64`、`linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`。二进制内嵌版本信息：
+
+```bash
+allproxyapi -version
+# AllProxyAPI v1.0.0 (commit a1b2c3d, built 2026-10-16T08:50:22Z)
+```
+
+**Docker**
+
+```bash
+docker compose up -d --build
+```
+
+镜像基于 `alpine:3.20`，多阶段构建，以非 root 用户运行，并带 `/health` HEALTHCHECK。`docker-compose.yml` 默认只把端口发布到宿主机回环（`127.0.0.1:8320`）——网关自身有 API key 鉴权，但把一个 LLM 代理默认暴露到网络上不是安全的默认值。凭据通过 `./data` 卷持久化，令牌轮换后写回宿主机。
 
 ---
 

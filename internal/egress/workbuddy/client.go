@@ -75,6 +75,16 @@ func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) 
 		return nil, fmt.Errorf("upstream rate limit (429)")
 	}
 
+	// Exhausted quota is not transient: park the account for the long window so
+	// the pool routes around it rather than retrying into the same limit.
+	if isQuotaExhausted(resp.StatusCode) {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		reason := quotaReason(resp.StatusCode, raw)
+		acc.SetCooldown(QuotaCooldown, reason)
+		return nil, fmt.Errorf("workbuddy %s", reason)
+	}
+
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
 		// Try token refresh
@@ -84,6 +94,17 @@ func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) 
 		}
 		acc.SetCooldown(300*time.Second, "401 Unauthorized")
 		return nil, fmt.Errorf("upstream unauthorized (401)")
+	}
+
+	// A 403 carrying a quota code is the same signal under a different status.
+	if resp.StatusCode == http.StatusForbidden {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if reason, ok := quotaTextReason(raw); ok {
+			acc.SetCooldown(QuotaCooldown, reason)
+			return nil, fmt.Errorf("workbuddy %s", reason)
+		}
+		return nil, fmt.Errorf("workbuddy upstream error (403): %s", string(raw))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

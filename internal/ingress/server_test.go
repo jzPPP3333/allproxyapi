@@ -18,9 +18,9 @@ import (
 
 func newTestRegistry(cfg *config.Config) *Registry {
 	reg := NewRegistry()
-	reg.Register(NewWorkBuddyAdapter(workbuddy.NewClient()))
+	reg.Register(NewWorkBuddyAdapter(workbuddy.NewClient(), cfg.Providers.WorkBuddy.CheckinPath))
 	reg.Register(NewAntigravityAdapter(antigravity.NewClient(&cfg.Providers.Antigravity)))
-	reg.Register(NewQoderAdapter(qoder.NewClient(cfg.Providers.Qoder)))
+	reg.Register(NewQoderAdapter(qoder.NewClient(cfg.Providers.Qoder), cfg.Providers.Qoder.CheckinPath))
 	return reg
 }
 

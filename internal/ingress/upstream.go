@@ -49,6 +49,10 @@ type Upstream interface {
 	// Unwrap strips any provider envelope from the response body. Adapters
 	// whose format is FormatOpenAI return src unchanged.
 	Unwrap(src io.Reader) (io.Reader, error)
+	// Checkin performs the provider's daily check-in for one account. A
+	// provider with no check-in concept returns a CheckinUnsupported result
+	// rather than an error, so a batch run reports it plainly.
+	Checkin(ctx context.Context, acc *pool.Account) (pool.CheckinResult, error)
 }
 
 // Registry maps provider IDs to their adapters.

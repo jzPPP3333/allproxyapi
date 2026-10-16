@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,11 +17,62 @@ import (
 	"github.com/jzPPP3333/allproxyapi/internal/pool"
 )
 
+// QuotaCooldown is how long an account is parked after the upstream reports
+// exhausted quota. Consumption refills on a slow cadence, so a short
+// rate-limit window would only retry the same account into the same wall.
+const QuotaCooldown = 30 * time.Minute
+
+// quotaCodes are the application-level codes Qoder returns inside a 200 or 4xx
+// body when the account has no remaining allowance.
+var quotaCodes = map[int]bool{
+	6004:  true, // insufficient credits
+	6005:  true, // daily quota reached
+	10006: true, // plan limit reached
+	42901: true, // concurrency quota
+}
+
+// isQuotaExhausted reports whether a status code identifies exhausted quota
+// rather than a generic failure. 402 is Payment Required and always counts.
+func isQuotaExhausted(status int) bool { return status == http.StatusPaymentRequired }
+
+// quotaCodeOf extracts an application-level code from a response body so the
+// cooldown reason can name it. It returns 0 when no known code is present.
+func quotaCodeOf(raw []byte) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var probe struct {
+		Code int `json:"code"`
+		Data *struct {
+			Code int `json:"code"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return 0
+	}
+	for _, candidate := range []int{probe.Code, codeOf(probe.Data)} {
+		if quotaCodes[candidate] {
+			return candidate
+		}
+	}
+	return 0
+}
+
+func codeOf(d *struct {
+	Code int `json:"code"`
+}) int {
+	if d == nil {
+		return 0
+	}
+	return d.Code
+}
+
 // Client talks to one Qoder region.
 type Client struct {
 	cfg        config.QoderConfig
 	httpClient *http.Client
 	region     string
+	cosy       *Config // nil when no public key is configured
 }
 
 func NewClient(cfg config.QoderConfig) *Client {
@@ -27,7 +80,46 @@ func NewClient(cfg config.QoderConfig) *Client {
 		cfg:        cfg,
 		httpClient: newHTTPClient(cfg.Proxy, 300*time.Second),
 		region:     regionOf(cfg.Region),
+		cosy:       buildCOSYConfig(cfg.COSY),
 	}
+}
+
+// buildCOSYConfig mirrors the YAML block into the crypto Config, parsing any
+// PEM material. A key that fails to parse is reported and the envelope stays
+// off rather than silently sending requests the upstream cannot read.
+func buildCOSYConfig(c config.COSYConfig) *Config {
+	if c.PublicKeyPEM == "" {
+		return nil
+	}
+	pub, err := ParsePublicKeyPEM([]byte(c.PublicKeyPEM))
+	if err != nil {
+		log.Printf("[qoder] providers.qoder.cosy.public_key_pem is invalid, COSY disabled: %v", err)
+		return nil
+	}
+	out := &Config{
+		PublicKey: pub,
+		KeyAlg:    c.KeyAlg,
+		Alphabet:  MustAlphabet(),
+	}
+	if c.Alphabet != "" {
+		alpha, albErr := NewAlphabet(c.Alphabet)
+		if albErr != nil {
+			log.Printf("[qoder] providers.qoder.cosy.alphabet is invalid, using default: %v", albErr)
+		} else {
+			out.Alphabet = alpha
+		}
+	}
+	if c.PrivateKeyPEM != "" {
+		if priv, pkErr := ParsePrivateKeyPEM([]byte(c.PrivateKeyPEM)); pkErr == nil {
+			out.PrivateKey = priv
+		} else {
+			log.Printf("[qoder] providers.qoder.cosy.private_key_pem is invalid, response decryption unavailable: %v", pkErr)
+		}
+	}
+	if c.SignKey != "" {
+		out.SignKey = []byte(c.SignKey)
+	}
+	return out
 }
 
 // uuid produces a random RFC 4122 v4 identifier for the request/session headers.
@@ -59,13 +151,28 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 		return nil, err
 	}
 
+	// The fingerprint is derived, not random: it must stay constant across
+	// restarts or the upstream sees a new device on every launch.
+	EnsureFingerprint(acc)
+
 	reqID := uuid()
 	sessionID := uuid()
-	if acc.MachineID == "" {
-		acc.MachineID = uuid()
+
+	// When the COSY key is configured, the request travels as an encrypted
+	// envelope rather than a plain body.
+	var payload []byte
+	enveloped := c.cosy.Enabled()
+	if enveloped {
+		sealed, sealErr := Seal(body, c.cosy)
+		if sealErr != nil {
+			return nil, wrapErr("seal request", sealErr)
+		}
+		payload = []byte(sealed)
+	} else {
+		payload = body
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, wrapErr("build chat request", err)
 	}
@@ -76,6 +183,10 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 	httpReq.Header.Set("X-Request-ID", reqID)
 	httpReq.Header.Set("X-Session-ID", sessionID)
 	httpReq.Header.Set("X-Client-Version", c.clientVersion())
+	if enveloped {
+		httpReq.Header.Set("X-Cosy-Alg", CipherAlg)
+		httpReq.Header.Set("X-Cosy-Version", strconv.Itoa(EnvelopeVersion))
+	}
 	if acc.MachineID != "" {
 		httpReq.Header.Set("X-Machine-Id", acc.MachineID)
 	}
@@ -93,6 +204,18 @@ func (c *Client) Chat(ctx context.Context, acc *pool.Account, reqBody []byte) (*
 		resp.Body.Close()
 		acc.SetCooldown(60*time.Second, "429 Too Many Requests")
 		return nil, fmt.Errorf("qoder rate limit (429)")
+
+	case isQuotaExhausted(resp.StatusCode):
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		reason := fmt.Sprintf("%d quota exhausted", resp.StatusCode)
+		if code := quotaCodeOf(raw); code != 0 {
+			reason = fmt.Sprintf("%d quota exhausted (code %d)", resp.StatusCode, code)
+		}
+		// Quota exhaustion is not transient: cooling the account down for the
+		// rate-limit window would just burn the same failing account again.
+		acc.SetCooldown(QuotaCooldown, reason)
+		return nil, fmt.Errorf("qoder %s: %s", reason, truncate(raw, 256))
 
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		resp.Body.Close()

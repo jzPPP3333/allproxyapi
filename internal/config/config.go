@@ -41,6 +41,32 @@ type QoderConfig struct {
 	ClientVersion string `yaml:"client_version"`
 	// Proxy is an optional per-provider egress proxy.
 	Proxy string `yaml:"proxy"`
+	// COSY configures the encrypted request envelope. Leaving the public key
+	// empty sends requests unencrypted, which the public inference host accepts.
+	COSY COSYConfig `yaml:"cosy"`
+	// CheckinPath is the daily check-in route appended to the auth host. Empty
+	// disables check-in for this provider.
+	CheckinPath string `yaml:"checkin_path"`
+	// DailyCheckin enables the background daily check-in scheduler.
+	DailyCheckin bool `yaml:"daily_checkin"`
+	// CheckinHour is the local hour (0-23) the scheduler runs at.
+	CheckinHour int `yaml:"checkin_hour"`
+}
+
+// COSYConfig carries the COSY envelope key material. Key values are PEM blocks
+// copied from your own Qoder client; they are not shipped with this repo, the
+// same way the Antigravity OAuth client credentials are config-only.
+type COSYConfig struct {
+	// PublicKeyPEM is the server RSA public key that wraps the session key.
+	PublicKeyPEM string `yaml:"public_key_pem"`
+	// PrivateKeyPEM is only needed to decrypt a response that echoes the envelope.
+	PrivateKeyPEM string `yaml:"private_key_pem"`
+	// KeyAlg selects the RSA padding: "RSA-OAEP-SHA256" (default) or "RSA-PKCS1v15".
+	KeyAlg string `yaml:"key_alg"`
+	// Alphabet overrides the 64-character base64 dictionary.
+	Alphabet string `yaml:"alphabet"`
+	// SignKey enables the envelope HMAC when non-empty.
+	SignKey string `yaml:"sign_key"`
 }
 
 type AntigravityConfig struct {
@@ -54,6 +80,13 @@ type AntigravityConfig struct {
 type WorkBuddyConfig struct {
 	DefaultRealm   string `yaml:"default_realm"`   // "cn" or "intl"
 	DefaultProduct string `yaml:"default_product"` // "workbuddy", "vscode", "cli"
+	// CheckinPath is the daily check-in route appended to the realm's chat
+	// host. Empty disables check-in for this provider.
+	CheckinPath string `yaml:"checkin_path"`
+	// DailyCheckin enables the background daily check-in scheduler.
+	DailyCheckin bool `yaml:"daily_checkin"`
+	// CheckinHour is the local hour (0-23) the scheduler runs at.
+	CheckinHour int `yaml:"checkin_hour"`
 }
 
 type RoutingConfig struct {

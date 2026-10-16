@@ -21,11 +21,24 @@ import (
 	"github.com/jzPPP3333/allproxyapi/internal/pool"
 )
 
+// Build metadata, overridden at link time by build.sh.
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+)
+
 func main() {
+	showVersion := flag.Bool("version", false, "Print version information and exit")
 	configPathFlag := flag.String("config", "./data/config.yaml", "Path to config file")
 	portFlag := flag.Int("port", 0, "Server port (overrides config)")
 	hostFlag := flag.String("host", "", "Server host (overrides config)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("AllProxyAPI %s (commit %s, built %s)\n", version, commit, buildDate)
+		return
+	}
 
 	// 1. Load configuration
 	configPath := *configPathFlag
@@ -50,9 +63,9 @@ func main() {
 	qoderClient := qoder.NewClient(cfg.Providers.Qoder)
 
 	upstreams := ingress.NewRegistry()
-	upstreams.Register(ingress.NewWorkBuddyAdapter(wbClient))
+	upstreams.Register(ingress.NewWorkBuddyAdapter(wbClient, cfg.Providers.WorkBuddy.CheckinPath))
 	upstreams.Register(ingress.NewAntigravityAdapter(agClient))
-	upstreams.Register(ingress.NewQoderAdapter(qoderClient))
+	upstreams.Register(ingress.NewQoderAdapter(qoderClient, cfg.Providers.Qoder.CheckinPath))
 
 	// 4. Initialize Refresher
 	refresher := pool.NewRefresher(accountPool, 60*time.Second)
@@ -109,6 +122,27 @@ func main() {
 
 	// 6. Initialize Ingress HTTP Server
 	server := ingress.NewServer(cfg, accountPool, upstreams)
+
+	// Daily check-in runs only when a provider has a check-in route configured.
+	// The hour is taken from whichever provider enabled it.
+	checkinHour := 0
+	checkinEnabled := false
+	if cfg.Providers.WorkBuddy.DailyCheckin && cfg.Providers.WorkBuddy.CheckinPath != "" {
+		checkinEnabled = true
+		checkinHour = cfg.Providers.WorkBuddy.CheckinHour
+	}
+	if cfg.Providers.Qoder.DailyCheckin && cfg.Providers.Qoder.CheckinPath != "" {
+		checkinEnabled = true
+		checkinHour = cfg.Providers.Qoder.CheckinHour
+	}
+	if checkinEnabled {
+		sched := ingress.NewCheckinScheduler(server, checkinHour)
+		server.AttachCheckinScheduler(sched)
+		sched.Start()
+		defer sched.Stop()
+		log.Printf("[Main] 每日签到已启用，运行时间 %02d:00", checkinHour)
+	}
+
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
 	httpServer := &http.Server{
