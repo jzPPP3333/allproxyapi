@@ -202,32 +202,20 @@ func (c *Client) DoGenerate(ctx context.Context, acc *pool.Account, model string
 }
 
 func (c *Client) GetDefaultModels() []string {
-	return []string{
-		"gemini-2.5-flash",
-		"gemini-2.5-pro",
-		"gemini-2.5-flash-thinking",
-		"gemini-3-flash",
-		"claude-3-7-sonnet",
-		"claude-3-5-sonnet",
-	}
+	return CatalogIDs()
 }
 
 // FetchModels returns available models for the Antigravity account.
+//
+// The Cloud Code PA exposes no model-list route, so the catalog is static.
+// It is the same set GetDefaultModels reports, so the dashboard and
+// /v1/models can never disagree about what this provider serves.
 func (c *Client) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error) {
 	if existing := acc.GetModels(); len(existing) > 0 {
 		return existing, nil
 	}
 
-	defaultList := []pool.ModelMetadata{
-		{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", DescriptionZh: "Google 最新极速轻量模型，低延迟高吞吐", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
-		{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", DescriptionZh: "Google 旗舰深度推理模型，复杂编码首选", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
-		{ID: "gemini-2.5-flash-thinking", Name: "Gemini 2.5 Flash Thinking", DescriptionZh: "具备显式思维链的 Gemini 增强模型", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "gemini-3-flash", Name: "Gemini 3 Flash", DescriptionZh: "新一代 Gemini 3 早期体验版本", SupportsToolCall: true, SupportsImages: true},
-		{ID: "claude-3-7-sonnet", Name: "Claude 3.7 Sonnet", DescriptionZh: "Anthropic 旗舰混合推理模型 (映射至 claude-sonnet-4-6)", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
-		{ID: "claude-3-5-sonnet", Name: "Claude 3.5 Sonnet", DescriptionZh: "Anthropic 前沿编码智能体模型", SupportsToolCall: true, SupportsImages: true},
-		{ID: "claude-opus-4-6-thinking", Name: "Claude Opus 4.6 Thinking", DescriptionZh: "Anthropic 顶级能力思考增强模型", SupportsToolCall: true, SupportsReasoning: true},
-	}
-
-	acc.SetModels(defaultList)
-	return defaultList, nil
+	list := CatalogCopy()
+	acc.SetModels(list)
+	return list, nil
 }

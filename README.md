@@ -38,8 +38,8 @@ internal/
     schema.go               Gemini 工具参数 schema 净化
     openai/, anthropic/     下游协议类型定义
   egress/
-    antigravity/            Cloud Code PA 客户端 + envelope 解包 + project 嗅探
-    workbuddy/              双 region 客户端 + 身份指纹头 + 签到
+    antigravity/            Cloud Code PA 客户端 + envelope 解包 + project 嗅探 + 模型目录
+    workbuddy/              双 region 客户端 + 身份指纹头 + 模型目录 + 签到
     qoder/                  region 端点 + 凭据交换/刷新 + COSY 信封 + 设备指纹 + 签到
   web/                      内嵌控制面板
   webtools/                 可选的联网搜索注入
@@ -53,6 +53,7 @@ type Upstream interface {
     Label() string
     Format() ResponseFormat                                     // OpenAI | Gemini 帧格式
     DefaultModels() []string
+    ModelCatalog() []pool.ModelMetadata                         // 同一份目录，带元数据
     FetchModels(ctx, *pool.Account) ([]pool.ModelMetadata, error)
     Chat(ctx, *pool.Account, *openai.ChatCompletionRequest, rawBody []byte) (*http.Response, error)
     Unwrap(io.Reader) (io.Reader, error)
@@ -129,6 +130,22 @@ curl http://127.0.0.1:8320/v1/messages \
 3. **默认 provider**：`routing.default_provider`。
 
 未识别的 provider 前缀不会被当作路由指令，会照常走规则匹配。
+
+### 清单里的名字可以直接用
+
+`/v1/models` 列出的每个模型名都保证能**不加前缀**直接请求，并且落到列它出来的那个 provider。这条不变量有测试守着（`internal/ingress/models_test.go`），它覆盖了曾经的三个真实缺陷：
+
+| 症状 | 原因 |
+|---|---|
+| 只配了一个 provider，清单里只剩它 | 静态兜底只在动态模型为空时执行，一个账号同步成功就会盖住另外两家 |
+| 选了清单里的名字，拿到的却是另一个模型 | 路由规则写死了 `upstream_model`，把所有 `claude-*` 折叠成同一个上游模型 |
+| 同一个模型名出现两次、归属不同 | 去重的 key 只用模型名，没用 `provider/模型名` |
+
+因此 `model_rules` 里的 `upstream_model` 留空即可 —— provider 自己的别名表负责映射，在规则里再写一次反而会覆盖掉它。
+
+**多 provider 提供同名模型时**：清单里会各列一行，归属于各自的 provider。此时不加前缀会有歧义，走规则匹配；要精确指定请用 `provider/模型名`。
+
+**人话别名仍然可用**：`claude-3-7-sonnet`、`deepseek-chat`、`kimi` 这类名字照常接受并被 provider 的映射表转换，只是不再作为独立模型出现在清单里 —— 两个名字指向同一个上游模型不该被算成两个模型。
 
 ---
 

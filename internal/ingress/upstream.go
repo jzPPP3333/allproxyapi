@@ -40,6 +40,10 @@ type Upstream interface {
 	// DefaultModels is the fallback catalog used when an account has no
 	// discovered models. It must not be presented as live upstream state.
 	DefaultModels() []string
+	// ModelCatalog is the same set as DefaultModels carrying its metadata, so
+	// the dashboard can show real capability flags instead of inferring them
+	// from the model name.
+	ModelCatalog() []pool.ModelMetadata
 	// FetchModels discovers the live model catalog for an account. Providers
 	// with no discovery endpoint should return their static catalog.
 	FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error)

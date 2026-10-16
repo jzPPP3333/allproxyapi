@@ -30,7 +30,9 @@ func NewClient() *Client {
 	}
 }
 
-// NormalizeModel maps standard names to WorkBuddy internal models
+// NormalizeModel maps a friendly alias onto a WorkBuddy upstream model name.
+// A name that is already an upstream model, or is unknown, passes through
+// unchanged so a caller can address the upstream catalog directly.
 func NormalizeModel(m string) string {
 	lower := strings.ToLower(strings.TrimSpace(m))
 	switch lower {
@@ -43,6 +45,27 @@ func NormalizeModel(m string) string {
 	default:
 		return m
 	}
+}
+
+// catalog is the static set of upstream models this provider serves. The
+// /v2/enterprises/personal/models route replaces it per account once synced;
+// this is what the gateway advertises before that happens.
+var catalog = []pool.ModelMetadata{
+	{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", DescriptionZh: "DeepSeek 极速版", SupportsToolCall: true},
+	{ID: "deepseek-v3.1", Name: "DeepSeek V3.1", DescriptionZh: "DeepSeek 通用模型", SupportsToolCall: true},
+	{ID: "deepseek-reasoner", Name: "DeepSeek Reasoner", DescriptionZh: "DeepSeek 深度推理模型", SupportsToolCall: true, SupportsReasoning: true},
+	{ID: "kimi-k3-1", Name: "Kimi K3.1", DescriptionZh: "月之暗面 Kimi K3.1", SupportsToolCall: true, SupportsReasoning: true},
+	{ID: "hy4-preview-f", Name: "Hunyuan 4 Preview", DescriptionZh: "腾讯混元 4 预览版", SupportsToolCall: true},
+	{ID: "hy3", Name: "Hunyuan 3", DescriptionZh: "腾讯混元 3", SupportsToolCall: true},
+	{ID: "glm-4-flash", Name: "GLM-4 Flash", DescriptionZh: "智谱 GLM-4 极速版", SupportsToolCall: true},
+	{ID: "gpt-4o", Name: "GPT-4o", DescriptionZh: "OpenAI GPT-4o", SupportsToolCall: true, SupportsImages: true},
+}
+
+// Catalog returns a copy of the static model catalog.
+func Catalog() []pool.ModelMetadata {
+	out := make([]pool.ModelMetadata, len(catalog))
+	copy(out, catalog)
+	return out
 }
 
 // DoChat forwards a chat completion request to WorkBuddy upstream /v2/chat/completions.
@@ -117,16 +140,12 @@ func (c *Client) DoChat(ctx context.Context, acc *pool.Account, reqBody []byte) 
 }
 
 func (c *Client) GetDefaultModels() []string {
-	return []string{
-		"deepseek-v4.1-flash",
-		"deepseek-v3.1",
-		"deepseek-reasoner",
-		"kimi-k3-1",
-		"hy4-preview-f",
-		"hy3",
-		"glm-4-flash",
-		"gpt-4o",
+	models := Catalog()
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
 	}
+	return ids
 }
 
 type upstreamModelItem struct {

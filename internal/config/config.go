@@ -130,7 +130,10 @@ func DefaultConfig() *Config {
 		Routing: RoutingConfig{
 			DefaultProvider: "workbuddy",
 			ModelRules: []ModelRuleConfig{
-				{Pattern: "^claude-.*", Provider: "antigravity", UpstreamModel: "claude-sonnet-4-6"},
+				// upstream_model is deliberately empty. The adapter's own
+				// normalizer maps friendly aliases; forcing one name here
+				// collapsed every claude-* model onto a single upstream model.
+				{Pattern: "^claude-.*", Provider: "antigravity", UpstreamModel: ""},
 				{Pattern: "^gemini-.*", Provider: "antigravity", UpstreamModel: ""},
 				{Pattern: "^deepseek-.*", Provider: "workbuddy", UpstreamModel: ""},
 				{Pattern: "^kimi-.*", Provider: "workbuddy", UpstreamModel: ""},

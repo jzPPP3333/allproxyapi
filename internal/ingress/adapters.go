@@ -39,6 +39,10 @@ func (a *antigravityAdapter) DefaultModels() []string {
 	return a.client.GetDefaultModels()
 }
 
+func (a *antigravityAdapter) ModelCatalog() []pool.ModelMetadata {
+	return antigravity.CatalogCopy()
+}
+
 func (a *antigravityAdapter) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error) {
 	return a.client.FetchModels(ctx, acc)
 }
@@ -90,11 +94,19 @@ func (a *workBuddyAdapter) DefaultModels() []string {
 	return a.client.GetDefaultModels()
 }
 
+func (a *workBuddyAdapter) ModelCatalog() []pool.ModelMetadata {
+	return workbuddy.Catalog()
+}
+
 func (a *workBuddyAdapter) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error) {
 	return a.client.FetchModels(ctx, acc)
 }
 
 func (a *workBuddyAdapter) Chat(ctx context.Context, acc *pool.Account, req *openai.ChatCompletionRequest, rawBody []byte) (*http.Response, error) {
+	// Apply the alias map before the body is rebuilt. Without this the
+	// NormalizeModel table was unreachable and a friendly name like
+	// "deepseek-chat" went upstream verbatim and was rejected.
+	req.Model = workbuddy.NormalizeModel(req.Model)
 	body, err := withOverrides(rawBody, req, map[string]interface{}{"stream": true})
 	if err != nil {
 		return nil, err
@@ -134,6 +146,10 @@ func (a *qoderAdapter) Format() ResponseFormat {
 
 func (a *qoderAdapter) DefaultModels() []string {
 	return a.client.DefaultModelIDs()
+}
+
+func (a *qoderAdapter) ModelCatalog() []pool.ModelMetadata {
+	return a.client.DefaultModels()
 }
 
 func (a *qoderAdapter) FetchModels(ctx context.Context, acc *pool.Account) ([]pool.ModelMetadata, error) {

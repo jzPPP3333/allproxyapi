@@ -179,38 +179,41 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Unix()
 	var models []openai.ModelItem
-	seen := make(map[string]bool)
 
-	// 1. Collect dynamic models from all accounts
+	// The same name can be served by more than one provider (several upstreams
+	// offer Kimi, GLM and DeepSeek). Keying on the name alone made whichever
+	// provider synced first the winner and silently removed the others, so the
+	// key is provider-scoped.
+	seen := make(map[string]bool)
+	add := func(id string, owner pool.AccountType) {
+		key := string(owner) + "/" + id
+		if id == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		models = append(models, openai.ModelItem{
+			ID:      id,
+			Object:  "model",
+			Created: now,
+			OwnedBy: string(owner),
+		})
+	}
+
+	// 1. Live models an account has already synced from its upstream.
 	for _, acc := range s.pool.List() {
 		for _, m := range acc.GetModels() {
-			if !seen[m.ID] {
-				seen[m.ID] = true
-				models = append(models, openai.ModelItem{
-					ID:      m.ID,
-					Object:  "model",
-					Created: now,
-					OwnedBy: string(acc.Type),
-				})
-			}
+			add(m.ID, acc.Type)
 		}
 	}
 
-	// 2. Default models if no dynamic models yet
-	if len(models) == 0 {
-		for _, up := range s.upstreams.All() {
-			for _, m := range up.DefaultModels() {
-				if seen[m] {
-					continue
-				}
-				seen[m] = true
-				models = append(models, openai.ModelItem{
-					ID:      m,
-					Object:  "model",
-					Created: now,
-					OwnedBy: string(up.ID()),
-				})
-			}
+	// 2. Every registered provider's catalog, unconditionally.
+	//
+	// This used to run only when step 1 produced nothing, so a single synced
+	// account hid every other provider from the list. The union is what makes
+	// this an aggregate endpoint rather than a first-provider-wins one.
+	for _, up := range s.upstreams.All() {
+		for _, id := range up.DefaultModels() {
+			add(id, up.ID())
 		}
 	}
 
@@ -503,16 +506,25 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 		healthy[up.ID()] = s.pool.Count(up.ID()) > 0
 	}
 
+	// A name several providers serve is several rows, not one; see handleModels.
 	seen := make(map[string]bool)
+	mark := func(id string, owner pool.AccountType) bool {
+		key := string(owner) + "/" + id
+		if id == "" || seen[key] {
+			return false
+		}
+		seen[key] = true
+		return true
+	}
+
 	var list []UIModelItem
 
-	// 1. Gather dynamic models from accounts
+	// 1. Live models an account has synced, which carry upstream metadata.
 	for _, acc := range s.pool.List() {
 		for _, m := range acc.GetModels() {
-			if seen[m.ID] {
+			if !mark(m.ID, acc.Type) {
 				continue
 			}
-			seen[m.ID] = true
 			displayName := m.Name
 			if displayName == "" {
 				displayName = m.ID
@@ -533,26 +545,36 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. Static catalog for every registered provider, for models not yet covered
+	// 2. Every registered provider's catalog, for models not yet covered.
+	//
+	// Capability flags come from the provider's own catalog rather than being
+	// inferred from the model name, which was guesswork that could disagree
+	// with what the provider actually serves.
 	for _, up := range s.upstreams.All() {
-		for _, id := range up.DefaultModels() {
-			if seen[id] {
+		for _, m := range up.ModelCatalog() {
+			if !mark(m.ID, up.ID()) {
 				continue
 			}
-			seen[id] = true
 			note := fmt.Sprintf("通道未就绪 (需添加 %s 凭据)", up.Label())
 			if healthy[up.ID()] {
 				note = "默认推荐模型"
 			}
+			name := m.Name
+			if name == "" {
+				name = m.ID
+			}
 			list = append(list, UIModelItem{
-				ID:                id,
-				Name:              id,
+				ID:                m.ID,
+				Name:              name,
+				DescriptionZh:     m.DescriptionZh,
+				Credits:           m.Credits,
+				MaxInputTokens:    m.MaxInputTokens,
+				SupportsImages:    m.SupportsImages,
+				SupportsReasoning: m.SupportsReasoning,
+				SupportsToolCall:  m.SupportsToolCall,
 				Provider:          string(up.ID()),
 				Active:            healthy[up.ID()],
 				Note:              note,
-				SupportsToolCall:  true,
-				SupportsReasoning: modelLooksReasoning(id),
-				SupportsImages:    up.ID() == pool.TypeAntigravity,
 			})
 		}
 	}

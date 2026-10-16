@@ -77,9 +77,11 @@ routing:
   # match wins. An explicit "<provider>/<model>" prefix on the request always
   # takes precedence over these rules.
   model_rules:
+    # upstream_model is left empty so the adapter's own normalizer maps the
+    # alias. Setting it here pins every matching model to one upstream name.
     - pattern: "^claude-.*"
       provider: "antigravity"
-      upstream_model: "claude-sonnet-4-6"
+      upstream_model: ""
     - pattern: "^gemini-.*"
       provider: "antigravity"
       upstream_model: ""
