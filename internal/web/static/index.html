@@ -397,6 +397,42 @@ claude</pre>
         <p style="font-size: 0.75rem; color: var(--text-muted);">使用 `/v1/messages` 原生协议，完整支持 Tool Calls，自动清洗 `const` 解决 400 校验错误。</p>
       </div>
     </div>
+
+    <!-- Metrics -->
+    <div class="card" style="margin-top: 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="font-size: 1rem; font-weight: 700;">实时指标与请求日志</h2>
+        <div style="display: flex; gap: 0.4rem;">
+          <span class="badge badge-gray" id="metric-qps" title="自启动以来的平均每秒请求数">QPS 0.00</span>
+          <span class="badge badge-blue" id="metric-ttft" title="首 token 延迟中位数 / P95">TTFT - / -</span>
+          <span class="badge badge-green" id="metric-ok" title="成功 / 失败">成功 0 / 失败 0</span>
+        </div>
+      </div>
+      <div class="models-grid" id="metrics-container" style="margin-top: 0.75rem; max-height: 260px; overflow-y: auto;">
+        <div style="color: var(--text-muted); font-size: 0.75rem;">暂无请求记录</div>
+      </div>
+    </div>
+
+    <!-- Playground -->
+    <div class="card" style="margin-top: 1rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <h2 style="font-size: 1rem; font-weight: 700;">在线演练场</h2>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <select id="playground-model" style="font-size: 0.75rem; padding: 0.35rem; max-width: 240px;"></select>
+          <label style="font-size: 0.7rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.25rem;">
+            <input type="checkbox" id="playground-reasoning" checked> 显示思考链
+          </label>
+          <button class="btn btn-sm" onclick="clearPlayground()">清空</button>
+        </div>
+      </div>
+      <div id="playground-log" style="margin-top: 0.75rem; max-height: 320px; overflow-y: auto; font-size: 0.8rem; line-height: 1.5;"></div>
+      <div style="display: flex; gap: 0.4rem; margin-top: 0.6rem;">
+        <input type="text" id="playground-input" placeholder="输入消息，回车发送…"
+               style="flex: 1; font-size: 0.8rem; padding: 0.5rem;"
+               onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendPlayground();}">
+        <button class="btn btn-sm" id="playground-send" onclick="sendPlayground()">发送</button>
+      </div>
+    </div>
   </main>
 
   <!-- Import Modal -->
@@ -507,6 +543,169 @@ claude</pre>
       return '<div style="font-size:0.65rem; color:var(--text-muted);">' + label + '恢复</div>';
     }
 
+    // --- metrics ---------------------------------------------------------
+
+    async function refreshMetrics() {
+      let data;
+      try {
+        data = await fetch('/api/metrics?limit=40').then(r => r.json());
+      } catch (_) {
+        return;
+      }
+      const s = data.summary || {};
+
+      document.getElementById('metric-qps').innerText =
+        'QPS ' + (s.qps || 0).toFixed(2);
+      document.getElementById('metric-ttft').innerText =
+        'TTFT ' + (s.ttft_ms_p50 || 0) + ' / ' + (s.ttft_ms_p95 || 0) + ' ms';
+      document.getElementById('metric-ok').innerText =
+        '成功 ' + (s.succeeded || 0) + ' / 失败 ' + (s.failed || 0);
+
+      const rows = data.requests || [];
+      const box = document.getElementById('metrics-container');
+      if (!rows.length) {
+        box.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem;">暂无请求记录</div>';
+        return;
+      }
+      box.innerHTML = rows.map(r => {
+        const ok = r.status >= 200 && r.status < 400 && !r.error;
+        const cls = ok ? 'badge-green' : 'badge-red';
+        const ttft = r.ttft_ms ? ' · TTFT ' + r.ttft_ms + 'ms' : '';
+        return '<div class="model-card" style="padding: 0.5rem;">' +
+          '<div style="display:flex; justify-content:space-between; gap:0.5rem; align-items:center;">' +
+            '<span style="font-family:monospace; font-size:0.72rem;">' + escapeHtml(r.model || r.path) + '</span>' +
+            '<span class="badge ' + cls + '" style="font-size:0.6rem;">' + r.status + '</span>' +
+          '</div>' +
+          '<div style="font-size:0.68rem; color:var(--text-muted); margin-top:0.2rem;">' +
+            escapeHtml(r.provider || '-') + (r.account ? ' · ' + escapeHtml(r.account) : '') +
+            ' · ' + r.duration_ms + 'ms' + ttft +
+          '</div>' +
+          (r.error ? '<div style="font-size:0.68rem; color:var(--danger); margin-top:0.2rem;">' + escapeHtml(r.error) + '</div>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    // --- playground ------------------------------------------------------
+
+    let playgroundHistory = [];
+
+    function clearPlayground() {
+      playgroundHistory = [];
+      document.getElementById('playground-log').innerHTML = '';
+    }
+
+    function renderPlaygroundModelOptions() {
+      const sel = document.getElementById('playground-model');
+      const previous = sel.value;
+      const ids = ALL_MODELS.map(m => m.id);
+      sel.innerHTML = ids.map(id => '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>').join('');
+      // Keep the operator's choice if that model is still available.
+      if (previous && ids.includes(previous)) sel.value = previous;
+    }
+
+    function appendPlayground(role, text, isThinking) {
+      const log = document.getElementById('playground-log');
+      const colour = role === 'user' ? 'var(--accent)' : (role === 'assistant' ? 'var(--text)' : 'var(--danger)');
+      const label = role === 'user' ? '你' : (role === 'assistant' ? '模型' : '错误');
+      const div = document.createElement('div');
+      div.style.margin = '0.4rem 0';
+      if (isThinking) {
+        div.innerHTML = '<div style="font-size:0.7rem; color:var(--text-muted);">思考链</div>' +
+          '<div style="white-space:pre-wrap; color:var(--text-muted); font-style:italic; border-left:2px solid var(--border); padding-left:0.5rem; margin-top:0.2rem;"></div>';
+        div.lastChild.innerText = text;
+      } else {
+        div.innerHTML = '<div style="font-size:0.7rem; color:var(--text-muted);">' + label + '</div>' +
+          '<div style="white-space:pre-wrap; color:' + colour + '; margin-top:0.2rem;"></div>';
+        div.lastChild.innerText = text;
+      }
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+      return div;
+    }
+
+    // Streams a completion, appending deltas as they arrive so the operator
+    // sees the same behaviour a real client would.
+    async function sendPlayground() {
+      const input = document.getElementById('playground-input');
+      const text = (input.value || '').trim();
+      if (!text) return;
+
+      const model = document.getElementById('playground-model').value;
+      if (!model) { appendPlayground('error', '没有可用模型，请先添加账号并同步模型。'); return; }
+
+      input.value = '';
+      appendPlayground('user', text);
+      playgroundHistory.push({ role: 'user', content: text });
+
+      const showThinking = document.getElementById('playground-reasoning').checked;
+      const sendBtn = document.getElementById('playground-send');
+      sendBtn.disabled = true;
+
+      const replyBox = appendPlayground('assistant', '');
+      replyBox.lastChild.innerText = '…';
+      const thinkingBox = showThinking ? appendPlayground('thinking', '', true) : null;
+      let thinkingText = '';
+
+      try {
+        const resp = await fetch('/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: model, messages: playgroundHistory, stream: true })
+        });
+
+        if (!resp.ok) {
+          replyBox.lastChild.innerText = '';
+          appendPlayground('error', 'HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 300));
+          sendBtn.disabled = false;
+          return;
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let answer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE frames are separated by a blank line; keep the trailing partial.
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop();
+
+          for (const frame of frames) {
+            for (const line of frame.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              const payload = line.slice(5).trim();
+              if (!payload || payload === '[DONE]') continue;
+              let chunk;
+              try { chunk = JSON.parse(payload); } catch (_) { continue; }
+
+              const choice = (chunk.choices || [])[0] || {};
+              const delta = choice.delta || {};
+              if (delta.reasoning_content) {
+                thinkingText += delta.reasoning_content;
+                if (thinkingBox) thinkingBox.lastChild.innerText = thinkingText;
+              }
+              if (delta.content) {
+                answer += delta.content;
+                replyBox.lastChild.innerText = answer;
+              }
+            }
+          }
+        }
+
+        if (!answer) replyBox.lastChild.innerText = '(空响应)';
+        playgroundHistory.push({ role: 'assistant', content: answer });
+      } catch (e) {
+        replyBox.lastChild.innerText = '';
+        appendPlayground('error', String(e));
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
     async function refreshData() {
       try {
         const [statusRes, accountsRes, modelsRes] = await Promise.all([
@@ -584,6 +783,7 @@ claude</pre>
         document.getElementById('stat-models').innerText = ALL_MODELS.length;
         renderProviderFilter();
         renderModels(ALL_MODELS);
+        renderPlaygroundModelOptions();
 
       } catch (err) {
         console.error("Dashboard refresh error:", err);
@@ -793,7 +993,11 @@ claude</pre>
     }
 
     refreshData();
+    refreshMetrics();
     setInterval(refreshData, 10000);
+    // Metrics poll faster than the account list: request throughput changes on
+    // a much shorter timescale than account state does.
+    setInterval(refreshMetrics, 3000);
   </script>
 </body>
 </html>

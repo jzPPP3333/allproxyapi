@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jzPPP3333/allproxyapi/internal/config"
@@ -27,6 +28,10 @@ type Server struct {
 	upstreams *Registry
 	mux       *http.ServeMux
 	checkin   *CheckinScheduler
+	metrics   *Metrics
+	// cfgMu guards the reloadable config and the path a reload reads from.
+	cfgMu           sync.RWMutex
+	configPathValue string
 }
 
 func NewServer(cfg *config.Config, p *pool.AccountPool, upstreams *Registry) *Server {
@@ -35,6 +40,7 @@ func NewServer(cfg *config.Config, p *pool.AccountPool, upstreams *Registry) *Se
 		pool:      p,
 		upstreams: upstreams,
 		mux:       http.NewServeMux(),
+		metrics:   NewMetrics(),
 	}
 	s.setupRoutes()
 	return s
@@ -49,9 +55,13 @@ func (s *Server) Handler() http.Handler {
 	return s.loggingMiddleware(s.corsMiddleware(s.authMiddleware(s.mux)))
 }
 
+// statusResponseWriter records the status and the time of the first byte, which
+// is the first-token latency for a streaming response.
 type statusResponseWriter struct {
 	http.ResponseWriter
 	statusCode int
+	at         time.Time
+	firstWrite time.Time
 }
 
 func (rw *statusResponseWriter) WriteHeader(code int) {
@@ -59,16 +69,74 @@ func (rw *statusResponseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+func (rw *statusResponseWriter) Write(b []byte) (int, error) {
+	if rw.firstWrite.IsZero() && len(b) > 0 {
+		rw.firstWrite = time.Now()
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
+// Flush forwards to the underlying writer so streaming still works through the
+// wrapper; without this the SSE path would buffer instead of streaming.
+func (rw *statusResponseWriter) Flush() {
+	if rw.firstWrite.IsZero() {
+		rw.firstWrite = time.Now()
+	}
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// firstWriteMillis returns the time from start to the first byte, or 0 when
+// nothing was written.
+func (rw *statusResponseWriter) firstWriteMillis(start time.Time) int64 {
+	if rw.firstWrite.IsZero() {
+		return 0
+	}
+	return rw.firstWrite.Sub(start).Milliseconds()
+}
+
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		next.ServeHTTP(rw, r)
+		rw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK, at: start}
+
+		// Handlers record the model and account they used; the middleware reads
+		// it back once the request finishes.
+		ctx, info := withRequestInfo(r.Context())
+		next.ServeHTTP(rw, r.WithContext(ctx))
+
 		duration := time.Since(start)
 
-		if r.URL.Path != "/health" && r.URL.Path != "/api/status" && r.URL.Path != "/api/accounts" {
+		path := RedactPath(r.URL.Path)
+
+		// Polling endpoints would otherwise drown the log; they are counted in
+		// the metrics but not printed.
+		quiet := path == "/health" || path == "/api/status" ||
+			path == "/api/accounts" || path == "/api/metrics"
+		if !quiet {
 			log.Printf("[HTTP] %s %s -> 状态码:%d (耗时:%s, 客户端:%s)",
-				r.Method, r.URL.Path, rw.statusCode, duration, r.RemoteAddr)
+				r.Method, path, rw.statusCode, duration, r.RemoteAddr)
+		}
+
+		// Only the API surface is recorded; dashboard assets are not traffic.
+		if s.metrics != nil && strings.HasPrefix(path, "/v1/") {
+			rec := RequestRecord{
+				At:             start,
+				Method:         r.Method,
+				Path:           path,
+				Status:         rw.statusCode,
+				DurationMillis: duration.Milliseconds(),
+				Model:          info.Model,
+				Provider:       info.Provider,
+				Account:        info.Account,
+				Tokens:         info.Tokens,
+				Err:            RedactError(info.Err),
+			}
+			if ttft := rw.firstWriteMillis(start); ttft > 0 {
+				rec.TTFTMillis = ttft
+			}
+			s.metrics.Observe(rec)
 		}
 	})
 }
@@ -98,6 +166,8 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/accounts/import", s.handleAPIImportAccount)
 	s.mux.HandleFunc("/api/models", s.handleAPIModels)
 	s.mux.HandleFunc("/api/checkin", s.handleAPICheckin)
+	s.mux.HandleFunc("/api/metrics", s.handleAPIMetrics)
+	s.mux.HandleFunc("/api/reload", s.handleAPIReload)
 
 	// Embedded Web Dashboard
 	web.RegisterRoutes(s.mux)
@@ -246,6 +316,13 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	provider, upstreamModel := s.ResolveProvider(req.Model)
 	req.Model = upstreamModel
 
+	// Attribute the request for the metrics record. The requested name is what
+	// the operator recognises, so it is recorded rather than the upstream one.
+	if info := requestInfoFrom(r.Context()); info != nil {
+		info.Model = rawModel
+		info.Provider = provider
+	}
+
 	// Check and inject web search if requested
 	s.maybeInjectWebSearch(&req)
 
@@ -254,6 +331,9 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 
 	resp, up, err := s.callUpstream(r.Context(), provider, &req, bodyBytes)
 	if err != nil {
+		if info := requestInfoFrom(r.Context()); info != nil {
+			info.Err = err.Error()
+		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}

@@ -128,6 +128,7 @@ func main() {
 
 	// 6. Initialize Ingress HTTP Server
 	server := ingress.NewServer(cfg, accountPool, upstreams)
+	server.SetConfigPath(configPath)
 
 	// Daily check-in runs only when a provider has a check-in route configured.
 	// The hour is taken from whichever provider enabled it.

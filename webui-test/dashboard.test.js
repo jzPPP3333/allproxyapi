@@ -51,18 +51,25 @@ const documentStub = {
 
 // --- load the app script ----------------------------------------------------
 
-// The page kicks off refreshData() and a polling interval at script scope.
-// Both are stubbed: fetch resolves to nothing so the initial refresh is a
-// no-op, and setInterval is a no-op so the process can exit.
+// The page kicks off refreshData(), refreshMetrics() and polling intervals at
+// script scope. All are stubbed: fetch returns a shaped but empty payload per
+// endpoint so the initial refresh is a no-op, and the timers do nothing so the
+// process can exit.
 const noop = () => 0;
-const failingFetch = () => Promise.resolve({ json: () => Promise.resolve(null) });
+const stubFetch = (url) => {
+  let body = null;
+  if (url.startsWith('/api/metrics')) body = { summary: {}, requests: [] };
+  else if (url === '/api/accounts') body = [];
+  else if (url === '/api/models') body = [];
+  return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+};
 
 const runner = new Function('document', 'fetch', 'setInterval', 'setTimeout', appSource + `
   return { providerMeta, accountSubtitle, renderProviderFilter, renderModels, filterModels,
            accountStatusBadge, accountRecoveryNote,
            setModels: (m) => { ALL_MODELS = m; }, getModels: () => ALL_MODELS };
 `);
-const api = runner(documentStub, failingFetch, noop, noop);
+const api = runner(documentStub, stubFetch, noop, noop);
 
 // --- assertions -------------------------------------------------------------
 

@@ -117,6 +117,8 @@ curl http://127.0.0.1:8320/v1/messages \
 | `GET /api/status` | 面板状态 |
 | `POST /api/checkin` | 立即签到（可带 `provider` / `id` 过滤） |
 | `GET /api/checkin` | 上次调度结果与各通道签到支持情况 |
+| `GET /api/metrics` | QPS、TTFT 分位、按模型/账号的用量与最近请求日志 |
+| `POST /api/reload` | 热重载配置（可带 `?config=<path>`） |
 | `GET /api/*` | 其余控制面板 API |
 
 ---
@@ -364,7 +366,40 @@ Antigravity 的额度随 Google 套餐发放，没有客户端侧签到动作，
 
 ## 控制面板
 
-`http://127.0.0.1:8320/` 提供：账号池状态与冷却情况、三通道模型清单（区分实时拉取与静态兜底）、上游同步、凭据导入、冷却重置。
+`http://127.0.0.1:8320/` 提供：账号池状态（四态徽章与恢复倒计时）、三通道模型清单（区分实时拉取与静态兜底）、上游同步、凭据导入、冷却重置、实时指标与请求日志、在线演练场。
+
+### 实时指标
+
+`GET /api/metrics` 返回自启动以来的累计数据：
+
+| 指标 | 说明 |
+|---|---|
+| `qps` | 平均每秒请求数 |
+| `ttft_ms_p50` / `ttft_ms_p95` | 首 token 延迟中位数与 P95（仅流式有意义） |
+| `by_model` / `by_provider` / `by_account` | 用量分布，用于看清哪个模型、哪个通道、哪个账号在消耗 |
+| `by_status` | 状态码分布 |
+| `requests` | 最近 200 条请求（面板默认显示 40 条） |
+
+延迟窗口只保留最近 256 个样本，避免一次突发把延迟读数长期拉高。
+
+**日志脱敏**：Bearer 令牌、`sk-`/`pt-`/`jt-`/`dt-`/`drt-` 前缀令牌、JWT、Google OAuth 令牌（`ya29.` / `1//`）、以及 URL 里的 `access_token`/`api_key`/`secret` 等参数，在写入请求记录**之前**就已替换为 `[REDACTED]` —— 密钥不会进入内存里的日志。请求路径只记录到 path，不带 query string。
+
+### 配置热更新
+
+```bash
+curl -X POST http://127.0.0.1:8320/api/reload
+```
+
+响应会明确区分两类字段：
+
+- `applied` —— 已生效：API key、出网代理、路由规则与默认 provider、各通道 `checkin_path`/`daily_checkin`、WorkBuddy `exclude_model_patterns`、Antigravity `default_project`。
+- `restart_required` —— **不能**热改，需要重启：监听地址与端口、凭据扫描目录、上游 base_url、Antigravity OAuth 凭据、Qoder COSY 密钥。
+
+配置解析失败时**不会**部分应用 —— 运行中的配置保持原样，并返回 400 说明原因。
+
+### 在线演练场
+
+面板内置聊天框，可直接选任意已接入模型测试流式输出、思考链（`reasoning_content`）与多轮对话，走的就是客户端会走的 `/v1/chat/completions`。
 
 ## 账号池
 

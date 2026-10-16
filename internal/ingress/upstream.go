@@ -186,6 +186,13 @@ func (s *Server) callUpstream(ctx context.Context, provider string, req *openai.
 		resp, err := up.Chat(ctx, acc, req, rawBody)
 		acc.ReleaseDispatch()
 
+		// Attribution covers the failing case too: an operator diagnosing a
+		// failure needs the account that failed, and `all accounts failed`
+		// alone does not say which ones were tried.
+		if info := requestInfoFrom(ctx); info != nil {
+			info.Account = acc.Name
+		}
+
 		if err != nil {
 			lastErr, lastAcc = err, acc
 			log.Printf("[%s] 账号 %s 失败: %v, 故障转移重试 (%d/%d)", up.Label(), acc.Name, err, attempt+1, maxAttempts)
