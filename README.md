@@ -151,15 +151,14 @@ curl http://127.0.0.1:8320/v1/messages \
 
 ### 档位条目会被过滤掉
 
-WorkBuddy 的上游模型接口把**档位预设**和真实模型混在同一个 `data.models` 数组里返回：
+WorkBuddy 的上游模型接口把**档位预设**和真实模型混在同一个 `data.models` 数组里返回。以下 id 取自一次真实响应：
 
 ```
-default-model    Auto      优秀的编码模型，适合日常使用      x0.79
-fast-model       Fast      响应快，适合简单任务
-balanced-model   Balanced  速度与质量兼顾，日常工作首选      x0.59
-primary-model    Primary   高质量输出，胜任复杂任务          x3.31
-deepseek-v4.1-flash        ← 真实模型
-kimi-k3-1                  ← 真实模型
+auto            Auto              自动为每个任务匹配模型
+default         Default           x2.20 credits
+lite            lite              Agent (promptHookEvaluator) 模型
+glm-5.3         GLM-5.3           x0.79 credits        ← 真实模型
+kimi-k3-1       Kimi-K3           x1.62 credits        ← 真实模型
 ```
 
 档位是**服务端路由别名**，不是一个可选模型，因此默认从清单里滤除。过滤规则是配置而非代码，上游改名时改 `providers.workbuddy.exclude_model_patterns` 即可，无需重新编译：
@@ -168,11 +167,23 @@ kimi-k3-1                  ← 真实模型
 providers:
   workbuddy:
     exclude_model_patterns:
-      - "(?i)^default-model$"
-      - "(?i)^fast-model$"
+      - "(?i)^auto$"
+      - "(?i)^default$"
+      - "(?i)^lite$"
 ```
 
-留空为 `[]` 则原样显示全部条目。匹配的是模型 id、忽略大小写、锚定首尾，所以 `deepseek-fast-model` 这类名字不会被误伤。被过滤的条目数以日志形式输出，不会静默丢弃。
+留空为 `[]` 则原样显示全部条目。匹配的是模型 id、忽略大小写、锚定首尾，所以 `deepseek-default` 这类名字不会被误伤。被过滤的条目数以日志形式输出，不会静默丢弃。
+
+**这些档位名来自对真实接口的观察，不是文档。** 上游改过档位命名，因此它们是配置项；发现未被匹配的档位时加进 `exclude_model_patterns`，不要改代码里的默认表。
+
+### 静态目录只是兜底
+
+面板和 `/v1/models` **不会**把静态目录和实时数据并在一起 —— 那是按 provider 各自兜底：
+
+- 该通道有账号同步成功 → 只显示上游真实返回的模型。
+- 该通道没有账号 → 才显示静态目录，并标注「通道未就绪」。
+
+这样静态目录里没验证过的 id 不会混进实时清单，客户端也就不会选到上游不存在的模型。所有静态目录的 id 都来自可核实的来源：WorkBuddy 来自真实接口响应，Antigravity 来自官方客户端注册表，Qoder 来自客户端代码中定义的档位集合。
 
 ---
 

@@ -270,18 +270,27 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Live models an account has already synced from its upstream.
+	liveByProvider := make(map[pool.AccountType]int)
 	for _, acc := range s.pool.List() {
 		for _, m := range acc.GetModels() {
+			before := len(models)
 			add(m.ID, acc.Type)
+			if len(models) > before {
+				liveByProvider[acc.Type]++
+			}
 		}
 	}
 
-	// 2. Every registered provider's catalog, unconditionally.
+	// 2. The static catalog for providers that reported nothing live.
 	//
-	// This used to run only when step 1 produced nothing, so a single synced
-	// account hid every other provider from the list. The union is what makes
-	// this an aggregate endpoint rather than a first-provider-wins one.
+	// Per-provider fallback rather than a union: a provider with synced
+	// accounts already lists what it serves, and merging the static list on top
+	// advertises ids no upstream returned, which a client can then select and
+	// fail on. A provider with no accounts still advertises its channel.
 	for _, up := range s.upstreams.All() {
+		if liveByProvider[up.ID()] > 0 {
+			continue
+		}
 		for _, id := range up.DefaultModels() {
 			add(id, up.ID())
 		}
@@ -627,6 +636,9 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var list []UIModelItem
+	// liveByProvider counts the models each provider reported from a real
+	// account, so step 2 knows which channels still need the fallback.
+	liveByProvider := make(map[pool.AccountType]int)
 
 	// 1. Live models an account has synced, which carry upstream metadata.
 	for _, acc := range s.pool.List() {
@@ -634,6 +646,7 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 			if !mark(m.ID, acc.Type) {
 				continue
 			}
+			liveByProvider[acc.Type]++
 			displayName := m.Name
 			if displayName == "" {
 				displayName = m.ID
@@ -654,12 +667,17 @@ func (s *Server) handleAPIModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2. Every registered provider's catalog, for models not yet covered.
+	// 2. The static catalog, but only for providers that have no live models.
 	//
-	// Capability flags come from the provider's own catalog rather than being
-	// inferred from the model name, which was guesswork that could disagree
-	// with what the provider actually serves.
+	// This is a per-provider fallback, not a union. A provider with synced
+	// accounts already reports what it actually serves, and merging the static
+	// list on top would mix unverified ids into a live list — which is exactly
+	// how invented model names reached the panel. A provider with no accounts
+	// still needs to advertise something so its channel is discoverable.
 	for _, up := range s.upstreams.All() {
+		if liveByProvider[up.ID()] > 0 {
+			continue
+		}
 		for _, m := range up.ModelCatalog() {
 			if !mark(m.ID, up.ID()) {
 				continue

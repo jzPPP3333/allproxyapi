@@ -305,22 +305,22 @@ func (c *Client) regionOf(acc *pool.Account) string {
 }
 
 // DefaultModels returns the static catalog of routable Qoder model keys.
+// DefaultModels is the fallback model set, taken from the set the official
+// client defines for its model picker:
+//
+//	new Set(["auto","ultimate","performance","efficient","lite"])
+//
+// These are the tier presets Qoder routes from; it does not publish the
+// concrete models behind them, so the tiers are what there is to offer. Named
+// models are not listed because none could be confirmed against the client —
+// advertising an id the upstream does not recognise would fail on selection.
 func (c *Client) DefaultModels() []pool.ModelMetadata {
 	return []pool.ModelMetadata{
-		{ID: "ultimate", Name: "Ultimate", DescriptionZh: "Qoder 最高能力档位，自动路由至旗舰模型", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "performance", Name: "Performance", DescriptionZh: "Qoder 均衡档位，性能与延迟平衡", SupportsToolCall: true},
-		{ID: "efficient", Name: "Efficient", DescriptionZh: "Qoder 极速档位，低延迟轻量任务", SupportsToolCall: true},
-		{ID: "qmodel_38max", Name: "Qwen3.8-Max", DescriptionZh: "通义千问旗舰模型", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "qmodel_latest", Name: "Qwen3.7-Max", DescriptionZh: "通义千问 3.7 旗舰", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "qmodel", Name: "Qwen3.7-Plus", DescriptionZh: "通义千问 3.7 Plus", SupportsToolCall: true},
-		{ID: "qfmodel", Name: "Qwen3.8-Flash", DescriptionZh: "通义千问 3.8 极速版", SupportsToolCall: true},
-		{ID: "kmodel_latest", Name: "Kimi-K3", DescriptionZh: "月之暗面 Kimi K3", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "kmodel", Name: "Kimi-K2.7-Code", DescriptionZh: "Kimi 代码专用模型", SupportsToolCall: true},
-		{ID: "gmodel", Name: "GLM-5.3", DescriptionZh: "智谱 GLM-5.3", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "gfmodel", Name: "GLM-5.3-Flash", DescriptionZh: "智谱 GLM-5.3 极速版", SupportsToolCall: true},
-		{ID: "dmodel", Name: "DeepSeek-V4-Pro", DescriptionZh: "DeepSeek V4 Pro", SupportsToolCall: true, SupportsReasoning: true},
-		{ID: "dfmodel", Name: "DeepSeek-V4-Flash", DescriptionZh: "DeepSeek V4 极速版", SupportsToolCall: true},
-		{ID: "mmodel", Name: "MiniMax-M3", DescriptionZh: "MiniMax M3", SupportsToolCall: true},
+		{ID: "auto", Name: "Auto", DescriptionZh: "自动为每个任务匹配最适合的模型", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+		{ID: "ultimate", Name: "Ultimate", DescriptionZh: "最高能力档位，自动路由至旗舰模型", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+		{ID: "performance", Name: "Performance", DescriptionZh: "均衡档位，性能与延迟平衡", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+		{ID: "efficient", Name: "Efficient", DescriptionZh: "极速档位，低延迟轻量任务", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+		{ID: "lite", Name: "Lite", DescriptionZh: "轻量档位，用于辅助类小任务", SupportsToolCall: true, SupportsReasoning: true},
 	}
 }
 
@@ -334,53 +334,17 @@ func (c *Client) DefaultModelIDs() []string {
 	return ids
 }
 
-// NormalizeModel maps a public alias onto a Qoder model key. Unknown names pass
-// through unchanged so callers can address keys directly.
+// NormalizeModel returns the Qoder key to send for a requested name.
+//
+// Qoder exposes tier presets rather than named models, so a tier passes
+// through unchanged and an empty request falls back to auto. Any other name is
+// also passed through: mapping an unrecognised model onto a tier would silently
+// serve a different model than the one asked for, which is worse than letting
+// the upstream reject a name it does not know.
 func NormalizeModel(model string) string {
-	lower := strings.ToLower(strings.TrimSpace(model))
-	if lower == "" {
-		return "ultimate"
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return "auto"
 	}
-	if _, ok := knownKeys[lower]; ok {
-		return lower
-	}
-
-	switch {
-	case strings.Contains(lower, "minimax") || strings.HasPrefix(lower, "mmodel"):
-		return "mmodel"
-	case strings.Contains(lower, "deepseek"):
-		if strings.Contains(lower, "flash") {
-			return "dfmodel"
-		}
-		return "dmodel"
-	case strings.Contains(lower, "kimi"):
-		if strings.Contains(lower, "code") || strings.Contains(lower, "k2") {
-			return "kmodel"
-		}
-		return "kmodel_latest"
-	case strings.Contains(lower, "glm"):
-		if strings.Contains(lower, "flash") {
-			return "gfmodel"
-		}
-		return "gmodel"
-	case strings.Contains(lower, "qwen"):
-		switch {
-		case strings.Contains(lower, "max"):
-			return "qmodel_38max"
-		case strings.Contains(lower, "flash"):
-			return "qfmodel"
-		default:
-			return "qmodel"
-		}
-	}
-	return model
-}
-
-var knownKeys = map[string]struct{}{
-	"ultimate": {}, "performance": {}, "efficient": {},
-	"qmodel_38max": {}, "qmodel_latest": {}, "qmodel": {}, "qfmodel": {},
-	"kmodel_latest": {}, "kmodel": {},
-	"gmodel": {}, "gfmodel": {},
-	"dmodel": {}, "dfmodel": {},
-	"mmodel": {},
+	return trimmed
 }

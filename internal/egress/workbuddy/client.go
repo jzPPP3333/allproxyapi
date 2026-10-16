@@ -75,18 +75,24 @@ func NormalizeModel(m string) string {
 	}
 }
 
-// catalog is the static set of upstream models this provider serves. The
-// /v2/enterprises/personal/models route replaces it per account once synced;
-// this is what the gateway advertises before that happens.
+// catalog is the fallback model set this provider advertises when no account
+// has synced yet.
+//
+// Every id here was observed in a real /v2/enterprises/personal/models
+// response. The live list replaces it per account, so this exists only so the
+// channel is discoverable before its first sync — an invented id would be
+// advertised to clients and then fail when selected.
 var catalog = []pool.ModelMetadata{
-	{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", DescriptionZh: "DeepSeek 极速版", SupportsToolCall: true},
-	{ID: "deepseek-v3.1", Name: "DeepSeek V3.1", DescriptionZh: "DeepSeek 通用模型", SupportsToolCall: true},
-	{ID: "deepseek-reasoner", Name: "DeepSeek Reasoner", DescriptionZh: "DeepSeek 深度推理模型", SupportsToolCall: true, SupportsReasoning: true},
-	{ID: "kimi-k3-1", Name: "Kimi K3.1", DescriptionZh: "月之暗面 Kimi K3.1", SupportsToolCall: true, SupportsReasoning: true},
-	{ID: "hy4-preview-f", Name: "Hunyuan 4 Preview", DescriptionZh: "腾讯混元 4 预览版", SupportsToolCall: true},
-	{ID: "hy3", Name: "Hunyuan 3", DescriptionZh: "腾讯混元 3", SupportsToolCall: true},
-	{ID: "glm-4-flash", Name: "GLM-4 Flash", DescriptionZh: "智谱 GLM-4 极速版", SupportsToolCall: true},
-	{ID: "gpt-4o", Name: "GPT-4o", DescriptionZh: "OpenAI GPT-4o", SupportsToolCall: true, SupportsImages: true},
+	{ID: "deepseek-v4.1-flash", Name: "DeepSeek V4.1 Flash", DescriptionZh: "DeepSeek 极速版", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", DescriptionZh: "DeepSeek V4 极速版", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", DescriptionZh: "DeepSeek V4 旗舰", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "kimi-k3-1", Name: "Kimi K3", DescriptionZh: "月之暗面 Kimi K3", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "kimi-k2-thinking", Name: "Kimi K2 Thinking", DescriptionZh: "Kimi 深度思考模型", SupportsToolCall: true, SupportsReasoning: true},
+	{ID: "glm-5.3", Name: "GLM-5.3", DescriptionZh: "智谱旗舰模型，擅长复杂推理与长程 Agent 任务", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "glm-5.3-flash", Name: "GLM-5.3-Flash", DescriptionZh: "智谱 GLM-5.3 极速版", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "minimax-m3", Name: "MiniMax-M3", DescriptionZh: "MiniMax M3", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "hy4-preview", Name: "Hy4 preview", DescriptionZh: "腾讯混元 4 预览版", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
+	{ID: "hy3", Name: "Hy3", DescriptionZh: "混元思考模型，推理能力增强", SupportsToolCall: true, SupportsImages: true, SupportsReasoning: true},
 }
 
 // Catalog returns a copy of the static model catalog.

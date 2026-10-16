@@ -70,20 +70,20 @@ func fetchAgainst(t *testing.T, client *Client, payload string) []string {
 // the upstream list mixed tier presets in with real models.
 func TestTierPresetsAreExcluded(t *testing.T) {
 	payload := modelsPayload(
-		"default-model", "fast-model", "balanced-model", "primary-model",
-		"deepseek-v4.1-flash", "kimi-k3-1", "gpt-4o",
+		"auto", "default", "lite",
+		"deepseek-v4.1-flash", "kimi-k3-1", "glm-5.3",
 	)
 	c := NewClient(config.DefaultExcludedModelPatterns)
 
 	got := fetchAgainst(t, c, payload)
-	for _, tier := range []string{"default-model", "fast-model", "balanced-model", "primary-model"} {
+	for _, tier := range []string{"auto", "default", "lite"} {
 		for _, id := range got {
 			if id == tier {
 				t.Errorf("tier preset %q was not filtered out", tier)
 			}
 		}
 	}
-	for _, real := range []string{"deepseek-v4.1-flash", "kimi-k3-1", "gpt-4o"} {
+	for _, real := range []string{"deepseek-v4.1-flash", "kimi-k3-1", "glm-5.3"} {
 		found := false
 		for _, id := range got {
 			if id == real {
@@ -100,7 +100,7 @@ func TestTierPresetsAreExcluded(t *testing.T) {
 // upstream's casing, which is not guaranteed stable.
 func TestExclusionIsCaseInsensitive(t *testing.T) {
 	c := NewClient(config.DefaultExcludedModelPatterns)
-	for _, id := range []string{"default-model", "DEFAULT-MODEL", "Default-Model", "FAST-MODEL"} {
+	for _, id := range []string{"auto", "AUTO", "Default", "LITE"} {
 		if !c.excluded(id) {
 			t.Errorf("%q should be excluded", id)
 		}
@@ -112,9 +112,9 @@ func TestExclusionIsCaseInsensitive(t *testing.T) {
 func TestExclusionDoesNotOverreach(t *testing.T) {
 	c := NewClient(config.DefaultExcludedModelPatterns)
 	for _, id := range []string{
-		"default-model-v2",    // not an exact preset name
-		"my-fast-model-x",     // unrelated
-		"deepseek-fast-model", // contains "fast-model" but is not a preset
+		"auto-v2",          // not an exact preset name
+		"myglm-fast-x",     // unrelated
+		"deepseek-default", // contains "default" but is not a preset
 		"gpt-4o",
 		"kimi-k3-1",
 	} {
@@ -128,7 +128,7 @@ func TestExclusionDoesNotOverreach(t *testing.T) {
 // entry, so a user can opt back into seeing the tiers.
 func TestNoPatternsMeansNoFiltering(t *testing.T) {
 	c := NewClient(nil)
-	for _, id := range []string{"default-model", "fast-model", "gpt-4o"} {
+	for _, id := range []string{"auto", "default", "glm-5.3"} {
 		if c.excluded(id) {
 			t.Errorf("%q was excluded with no patterns configured", id)
 		}
@@ -137,11 +137,11 @@ func TestNoPatternsMeansNoFiltering(t *testing.T) {
 
 // TestInvalidPatternIsSkipped checks a bad regexp does not disable the client.
 func TestInvalidPatternIsSkipped(t *testing.T) {
-	c := NewClient([]string{"[unclosed", `(?i)^fast-model$`})
+	c := NewClient([]string{"[unclosed", `(?i)^default$`})
 	if len(c.excludeModel) != 1 {
 		t.Fatalf("expected only the valid pattern to compile, got %d", len(c.excludeModel))
 	}
-	if !c.excluded("fast-model") {
+	if !c.excluded("default") {
 		t.Error("the valid pattern stopped working because a sibling was invalid")
 	}
 }
@@ -154,7 +154,7 @@ func TestCustomPatternsReplaceDefaults(t *testing.T) {
 		t.Error("custom pattern was not applied")
 	}
 	// The defaults are not merged in: this list is the whole policy.
-	if c.excluded("fast-model") {
+	if c.excluded("default") {
 		t.Error("defaults leaked into a custom pattern list")
 	}
 }
@@ -166,7 +166,7 @@ func TestExcludedModelsAreNotCached(t *testing.T) {
 
 	// Simulate the parse loop's filtering against a cached account.
 	c := NewClient(config.DefaultExcludedModelPatterns)
-	payload := modelsPayload("default-model", "deepseek-v4.1-flash")
+	payload := modelsPayload("default", "deepseek-v4.1-flash")
 
 	var parsed upstreamModelsResponse
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {

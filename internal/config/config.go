@@ -97,13 +97,21 @@ type WorkBuddyConfig struct {
 }
 
 // DefaultExcludedModelPatterns drops the upstream's tier presets from the
-// model list. Each is a server-side alias that resolves to a real model, so
-// listing them alongside real models would misrepresent what is selectable.
+// model list.
+//
+// These ids come from an observed upstream response, not from documentation:
+// the list mixes presets such as "auto" and "default" in with concrete models
+// like "glm-5.3". A preset is a server-side alias that resolves to a real model
+// at request time, so listing it as a model would misrepresent what is
+// selectable.
+//
+// The names are configuration precisely because they are upstream-defined and
+// have changed before; if a preset appears that is not matched here, add it to
+// exclude_model_patterns rather than editing this list.
 var DefaultExcludedModelPatterns = []string{
-	`(?i)^default-model$`,
-	`(?i)^fast-model$`,
-	`(?i)^balanced-model$`,
-	`(?i)^primary-model$`,
+	`(?i)^auto$`,
+	`(?i)^default$`,
+	`(?i)^lite$`,
 }
 
 type RoutingConfig struct {
@@ -208,8 +216,12 @@ func DefaultConfig() *Config {
 				{Pattern: "^hy.*", Provider: "workbuddy", UpstreamModel: ""},
 				{Pattern: "^glm-.*", Provider: "workbuddy", UpstreamModel: ""},
 				{Pattern: "^gpt-.*", Provider: "workbuddy", UpstreamModel: ""},
-				// Qoder aliases (tier + model keys used by the Qoder client).
-				{Pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel|ultimate|performance|efficient).*", Provider: "qoder", UpstreamModel: ""},
+				// Qoder's tier presets. Matched as exact names because "auto"
+				// and "lite" are also WorkBuddy tier ids; use "qoder/auto" to
+				// address Qoder's unambiguously.
+				{Pattern: "^(ultimate|performance|efficient)$", Provider: "qoder", UpstreamModel: ""},
+				// Named Qoder models, if the upstream starts serving them.
+				{Pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel).*", Provider: "qoder", UpstreamModel: ""},
 			},
 		},
 		Storage: StorageConfig{

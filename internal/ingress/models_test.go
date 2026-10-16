@@ -68,10 +68,25 @@ func TestEveryProviderAppearsWithNoAccounts(t *testing.T) {
 	}
 }
 
+// genuinelySharedIDs are names served by more than one provider, so an
+// unprefixed request is ambiguous by nature and routing must pick one. They are
+// addressed unambiguously as "<provider>/<id>".
+//
+// WorkBuddy and Qoder both expose an "auto" and a "lite" tier preset. That is
+// a real upstream overlap, not a routing defect, so it is recorded here rather
+// than papered over.
+var genuinelySharedIDs = map[string]bool{
+	"auto": true,
+	"lite": true,
+}
+
 // TestAdvertisedModelsResolveToTheirOwnProvider is the invariant that makes
-// this whole class of mismatch impossible: every id the gateway advertises must
-// route back to the provider that advertised it, rather than to another
-// provider whose rule happened to match first.
+// this class of mismatch impossible: every id the gateway advertises must route
+// back to the provider that advertised it, rather than to another provider
+// whose rule happened to match first.
+//
+// Genuinely shared names are exempt, and are required to be reachable with an
+// explicit prefix instead, so an ambiguous name still has a working path.
 func TestAdvertisedModelsResolveToTheirOwnProvider(t *testing.T) {
 	server, ts := newModelServer(t)
 	list := fetchModels(t, ts)
@@ -81,10 +96,21 @@ func TestAdvertisedModelsResolveToTheirOwnProvider(t *testing.T) {
 	}
 
 	for _, m := range list.Data {
-		provider, _ := server.ResolveProvider(m.ID)
-		if provider != m.OwnedBy {
-			t.Errorf("model %q is advertised by %q but routes to %q", m.ID, m.OwnedBy, provider)
+		provider, upstream := server.ResolveProvider(m.ID)
+		if provider == m.OwnedBy {
+			continue
 		}
+		if !genuinelySharedIDs[m.ID] {
+			t.Errorf("model %q is advertised by %q but routes to %q", m.ID, m.OwnedBy, provider)
+			continue
+		}
+		// A shared name must still be reachable by its explicit prefix.
+		prefixed, prefixedModel := server.ResolveProvider(m.OwnedBy + "/" + m.ID)
+		if prefixed != m.OwnedBy || prefixedModel != m.ID {
+			t.Errorf("shared model %q is not reachable as %q/%q (got %q/%q)",
+				m.ID, m.OwnedBy, m.ID, prefixed, prefixedModel)
+		}
+		_ = upstream
 	}
 }
 

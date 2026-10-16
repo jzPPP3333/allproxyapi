@@ -19,16 +19,16 @@ const upstreamModelsBody = `{
   "msg": "ok",
   "data": {
     "models": [
-      {"id":"default-model","name":"Auto","descriptionZh":"优秀的编码模型，适合日常使用","credits":"x0.79","supportsToolCall":true,"supportsReasoning":false,"supportsImages":true},
-      {"id":"fast-model","name":"Fast","descriptionZh":"响应快，适合简单任务","credits":"","supportsToolCall":true,"supportsReasoning":false,"supportsImages":false},
-      {"id":"balanced-model","name":"Balanced","descriptionZh":"速度与质量兼顾，日常工作首选","credits":"x0.59","supportsToolCall":true,"supportsReasoning":true,"supportsImages":true},
-      {"id":"primary-model","name":"Primary","descriptionZh":"高质量输出，胜任复杂任务","credits":"x3.31","supportsToolCall":true,"supportsReasoning":true,"supportsImages":false},
+      {"id":"auto","name":"Auto","descriptionZh":"优秀的编码模型，适合日常使用","credits":"x0.79","supportsToolCall":true,"supportsReasoning":false,"supportsImages":true},
+      {"id":"default","name":"Default","descriptionZh":"响应快，适合简单任务","credits":"","supportsToolCall":true,"supportsReasoning":false,"supportsImages":false},
+      {"id":"lite","name":"lite","descriptionZh":"速度与质量兼顾，日常工作首选","credits":"x0.59","supportsToolCall":true,"supportsReasoning":true,"supportsImages":true},
+      {"id":"hy3-x","name":"Hy3","descriptionZh":"高质量输出，胜任复杂任务","credits":"x3.31","supportsToolCall":true,"supportsReasoning":true,"supportsImages":false},
       {"id":"deepseek-v4.1-flash","name":"DeepSeek V4.1 Flash","credits":"x0.15","supportsToolCall":true},
       {"id":"kimi-k3-1","name":"Kimi K3.1","supportsToolCall":true,"supportsReasoning":true},
-      {"id":"gpt-4o","name":"GPT-4o","supportsToolCall":true,"supportsImages":true}
+      {"id":"glm-5.3","name":"GPT-4o","supportsToolCall":true,"supportsImages":true}
     ],
     "agents": [
-      {"name":"coder","models":["default-model","deepseek-v4.1-flash"]}
+      {"name":"coder","models":["auto","deepseek-v4.1-flash"]}
     ]
   }
 }`
@@ -78,20 +78,20 @@ func TestFetchModelsDropsTierPresets(t *testing.T) {
 	}
 	t.Logf("returned %d models: %v", len(models), keysOf(got))
 
-	for _, tier := range []string{"default-model", "fast-model", "balanced-model", "primary-model"} {
+	for _, tier := range []string{"auto", "default", "lite"} {
 		if got[tier] {
 			t.Errorf("tier preset %q is still listed", tier)
 		}
 	}
-	for _, real := range []string{"deepseek-v4.1-flash", "kimi-k3-1", "gpt-4o"} {
+	for _, real := range []string{"deepseek-v4.1-flash", "kimi-k3-1", "glm-5.3"} {
 		if !got[real] {
 			t.Errorf("real model %q was dropped", real)
 		}
 	}
 
 	// The tier ids also appear in the agents list; the filter must apply there.
-	if len(models) != 3 {
-		t.Errorf("expected exactly the 3 real models, got %d: %v", len(models), keysOf(got))
+	if len(models) != 4 {
+		t.Errorf("expected exactly the 4 real models, got %d: %v", len(models), keysOf(got))
 	}
 }
 

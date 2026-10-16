@@ -19,34 +19,43 @@ func TestCatalogIDsPassThroughNormalizeModel(t *testing.T) {
 	}
 }
 
-// TestPublicAliasesResolve checks friendly names still map onto catalog keys.
-func TestPublicAliasesResolve(t *testing.T) {
+// TestCatalogTiersAreRecognised checks the tiers the catalog advertises are
+// the ones the client's model picker defines, and that they survive
+// normalization unchanged.
+func TestCatalogTiersAreRecognised(t *testing.T) {
 	c := NewClient(configForTest())
-	known := map[string]bool{}
+
+	// The set the official client defines for its model picker.
+	want := map[string]bool{
+		"auto": true, "ultimate": true, "performance": true,
+		"efficient": true, "lite": true,
+	}
+	got := map[string]bool{}
 	for _, m := range c.DefaultModels() {
-		known[m.ID] = true
+		got[m.ID] = true
+		if NormalizeModel(m.ID) != m.ID {
+			t.Errorf("catalog tier %q does not survive normalization", m.ID)
+		}
 	}
 
-	cases := map[string]string{
-		"":                  "ultimate",
-		"Qwen3.8-Max":       "qmodel_38max",
-		"qwen-max":          "qmodel_38max",
-		"qwen-flash":        "qfmodel",
-		"deepseek-chat":     "dmodel",
-		"deepseek-v4-flash": "dfmodel",
-		"kimi-k2-code":      "kmodel",
-		"kimi-k3":           "kmodel_latest",
-		"glm-5.3-flash":     "gfmodel",
-		"glm-5.3":           "gmodel",
-		"minimax-m3":        "mmodel",
-	}
-	for in, want := range cases {
-		got := NormalizeModel(in)
-		if got != want {
-			t.Errorf("NormalizeModel(%q) = %q, want %q", in, got, want)
+	for id := range want {
+		if !got[id] {
+			t.Errorf("the client's tier %q is missing from the catalog", id)
 		}
-		if !known[got] {
-			t.Errorf("NormalizeModel(%q) = %q, which is not in the catalog", in, got)
+	}
+	for id := range got {
+		if !want[id] {
+			t.Errorf("the catalog advertises %q, which is not a client tier", id)
+		}
+	}
+}
+
+// TestUnknownNamesPassThrough checks a model name is not rewritten onto a
+// tier, which would serve a different model than the caller asked for.
+func TestUnknownNamesPassThrough(t *testing.T) {
+	for _, name := range []string{"qwen-max", "deepseek-chat", "kimi-k3", "glm-5.3", "minimax-m3"} {
+		if got := NormalizeModel(name); got != name {
+			t.Errorf("NormalizeModel(%q) = %q; it must not be mapped onto a tier", name, got)
 		}
 	}
 }

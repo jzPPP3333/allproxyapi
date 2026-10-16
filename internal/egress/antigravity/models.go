@@ -15,28 +15,34 @@ import "github.com/jzPPP3333/allproxyapi/internal/pool"
 // upstream model are two names for the same thing.
 var Catalog = []pool.ModelMetadata{
 	{
-		ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash",
-		DescriptionZh:     "Google 极速轻量模型，低延迟高吞吐",
-		SupportsToolCall:  true,
-		SupportsImages:    true,
-		SupportsReasoning: true,
-	},
-	{
-		ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro",
-		DescriptionZh:     "Google 旗舰深度推理模型，复杂编码首选",
-		SupportsToolCall:  true,
-		SupportsImages:    true,
-		SupportsReasoning: true,
-	},
-	{
-		ID: "gemini-2.5-flash-thinking", Name: "Gemini 2.5 Flash Thinking",
-		DescriptionZh:     "具备显式思维链的 Gemini 增强模型",
-		SupportsToolCall:  true,
-		SupportsReasoning: true,
-	},
-	{
 		ID: "gemini-3-flash", Name: "Gemini 3 Flash",
-		DescriptionZh:    "新一代 Gemini 3 早期体验版本",
+		DescriptionZh:     "Google 新一代极速模型",
+		SupportsToolCall:  true,
+		SupportsImages:    true,
+		SupportsReasoning: true,
+	},
+	{
+		ID: "gemini-3.8-flash-high", Name: "Gemini 3.8 Flash",
+		DescriptionZh:     "Gemini 3.8 高算力档",
+		SupportsToolCall:  true,
+		SupportsImages:    true,
+		SupportsReasoning: true,
+	},
+	{
+		ID: "gemini-3.1-flash-lite", Name: "Gemini 3.1 Flash Lite",
+		DescriptionZh:     "Gemini 3.1 轻量档，低延迟",
+		SupportsToolCall:  true,
+		SupportsReasoning: true,
+	},
+	{
+		ID: "gemini-3.5-flash-lite", Name: "Gemini 3.5 Flash Lite",
+		DescriptionZh:     "Gemini 3.5 轻量档",
+		SupportsToolCall:  true,
+		SupportsReasoning: true,
+	},
+	{
+		ID: "gemini-3.1-flash-image", Name: "Gemini 3.1 Flash Image",
+		DescriptionZh:    "Gemini 3.1 图像理解档",
 		SupportsToolCall: true,
 		SupportsImages:   true,
 	},

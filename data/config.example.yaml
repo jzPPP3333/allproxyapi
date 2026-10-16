@@ -37,17 +37,17 @@ providers:
     checkin_path: ""
     daily_checkin: false
     checkin_hour: 9
-    # The upstream model list mixes its tier presets (default-model,
-    # fast-model, ...) in with real models. Those are server-side routing
-    # aliases rather than selectable models, so they are filtered out here.
-    # Patterns are regexps matched against the model id, case-insensitively,
-    # and are config rather than code so an upstream rename needs no rebuild.
+    # The upstream model list mixes its tier presets (auto, default, lite) in
+    # with real models. Those are server-side routing aliases rather than
+    # selectable models, so they are filtered out here. The ids below come from
+    # an observed upstream response, not from documentation, and the upstream
+    # has renamed them before -- which is why this is config rather than code.
+    # Patterns are regexps matched against the model id, case-insensitively.
     # Set to [] to show every entry as-is.
     exclude_model_patterns:
-      - "(?i)^default-model$"
-      - "(?i)^fast-model$"
-      - "(?i)^balanced-model$"
-      - "(?i)^primary-model$"
+      - "(?i)^auto$"
+      - "(?i)^default$"
+      - "(?i)^lite$"
 
   # Alibaba Qoder. The inference host exposes an OpenAI-compatible
   # /model/v1/chat/completions route that needs no request signing.
@@ -111,7 +111,15 @@ routing:
     - pattern: "^gpt-.*"
       provider: "workbuddy"
       upstream_model: ""
-    - pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel|ultimate|performance|efficient).*"
+    # Qoder's tier presets. "auto" and "lite" are also WorkBuddy tier ids, so
+    # they are matched as exact names only, keeping the two channels
+    # distinguishable; use "qoder/auto" to address Qoder's unambiguously.
+    - pattern: "^(ultimate|performance|efficient)$"
+      provider: "qoder"
+      upstream_model: ""
+    - pattern: "^(qwen|qmodel|qfmodel|kmodel|gmodel|gfmodel|dmodel|dfmodel|mmodel).*"
+      provider: "qoder"
+      upstream_model: ""
       provider: "qoder"
       upstream_model: ""
 
