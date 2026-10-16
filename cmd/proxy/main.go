@@ -101,6 +101,12 @@ func main() {
 	refresher.Start()
 	defer refresher.Stop()
 
+	// Follow the credential directories so a credential added or removed while
+	// the gateway runs takes effect without a restart.
+	watcher := pool.NewWatcher(accountPool, dirsToScan)
+	watcher.Start()
+	defer watcher.Stop()
+
 	// Asynchronously discover models for all accounts on startup
 	go func() {
 		time.Sleep(1 * time.Second)

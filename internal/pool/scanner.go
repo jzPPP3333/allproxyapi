@@ -442,5 +442,53 @@ func SaveAccountToFile(acc *Account) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(acc.FilePath, data, 0644)
+	return writeFileAtomic(acc.FilePath, data, 0644)
+}
+
+// writeFileAtomic writes a file by way of a temporary sibling and a rename.
+//
+// A credential file is rewritten every time a token refreshes. A plain
+// truncating write leaves a window where the file is empty or half written, so
+// a crash or a kill at the wrong moment destroys the credential and the account
+// has to be re-imported. rename is atomic on the same filesystem, so a reader
+// sees either the old file or the new one, never a partial one.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	// Any failure past this point must not leave the temp file behind.
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	// Flush to disk before the rename, otherwise a crash can leave the rename
+	// pointing at a file whose contents never landed.
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		cleanup()
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("replace %s: %w", path, err)
+	}
+	return nil
 }

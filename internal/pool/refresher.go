@@ -68,7 +68,13 @@ func (r *Refresher) RefreshAccount(ctx context.Context, acc *Account) error {
 		return nil
 	}
 
-	err := handler(ctx, acc)
+	// Collapse concurrent refreshes of the same account into one provider call.
+	// Several requests noticing the same expiring token at once would otherwise
+	// each refresh it, and a provider that rotates the refresh token on use
+	// would leave all but the last response invalid.
+	err := singleflightRefresh(acc, func() error {
+		return handler(ctx, acc)
+	})
 	if err != nil {
 		log.Printf("[Refresher] failed to refresh %s account '%s': %v", acc.Type, acc.Name, err)
 		return err
